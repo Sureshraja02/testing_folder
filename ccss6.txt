@@ -1,0 +1,5933 @@
+--------------------------------------------------------
+--  File created - Tuesday-January-06-2026   
+--------------------------------------------------------
+--------------------------------------------------------
+--  DDL for Sequence ACCBALSLOG_SEQUENCE
+--------------------------------------------------------
+
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CHECK_AND_COPY_ATMNOTEBIN" (
+		itermatm_id	ATMNOTEBINRP.termatm_id%type,
+		ictxdate	ATMNOTEBINRP.ctxdate%type,
+		iadddate	ATMNOTEBINRP.adddate%type,
+		iaddtime	ATMNOTEBINRP.addtime%type) is
+
+	-- Convention: everything starting with "x" is local
+	xbin		ATMNOTEBIN.bin%type;
+	xnoteid		ATMNOTEBIN.noteid%type;
+	xecblevel	ATMNOTEBIN.ecblevel%type;
+	xload		ATMNOTEBIN.load%type;
+	xvalid		ATMNOTEBIN.valid%type;
+	xcount		number(10,0);
+begin
+	for r in (
+		select nb.bin, nb.noteid, nb.ecblevel, nb.load, nb.valid
+		from ATMNOTEBIN nb
+		where nb.termatm_id = itermatm_id
+	) loop
+		xbin := r.bin;
+		xnoteid := r.noteid;
+		xecblevel := r.ecblevel;
+		xload := r.load;
+		xvalid := r.valid;
+
+		select count(termatm_id) into xcount
+		from ATMNOTEBINRP
+		where termatm_id = itermatm_id and
+			ctxdate = ictxdate and
+			noteid = xnoteid and
+			ecblevel = xecblevel and
+			bin = xbin;
+
+		if (xcount = 0) then
+			insert into ATMNOTEBINRP
+				(termatm_id, ctxdate, adddate, addtime,
+				bin, noteid, ecblevel, load, valid)
+			values (itermatm_id, ictxdate, iadddate, iaddtime,
+				xbin, xnoteid, xecblevel, xload, xvalid);
+		end if;
+	end loop;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CHG_ACCDET_CRED
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CHG_ACCDET_CRED" (accdet_id IN accdet.id%type,
+				   acclim IN accdet.credit_limit%type)
+--Ensure that changes to acclimit.totlim_amt are refected in the accdet
+is
+	in_accdet_id      accdet.id%type := accdet_id;
+begin
+	if in_accdet_id is null then
+in_accdet_id := 0;
+end if;
+update	accdet
+set	credit_limit = acclim
+where	id = accdet_id
+and     classid = 3;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CLOSE_CRDBTCH
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CLOSE_CRDBTCH" ( batch   number)
+as
+in_batch           number(10,0) := batch;
+begin
+	NULL;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure COPY_REPLACED_CARD_ADDRESS
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."COPY_REPLACED_CARD_ADDRESS" (old_crddet_id_IN IN number,
+new_crddet_id_IN IN number)
+is
+old_in_crddet_id       NUMBER(10,0) := old_crddet_id_IN;
+new_in_crddet_id       NUMBER(10,0) := new_crddet_id_IN;
+
+begin
+
+FOR prt_pcmp_media_res IN(
+SELECT prt_pcmp_media.mediatype_id,
+prt_pcmp_media.media_id,
+prt_pcmp_media.prt_cmpt_id,
+prt_pcmp_media.prt_party_id,
+prt_pcmp_media.prt_cm_id,
+prt_pcmp_media.prt_cmt_id,
+prt_pcmp_media.prt_prt_id,
+prt_pcmp_media.prt_pcm_from_date,
+prt_pcmp_media.prt_pcmp_from_date
+FROM prt_pcmp_media
+WHERE
+prt_pcmp_media.media_id = old_in_crddet_id
+and prt_pcmp_media.mediatype_id = 0
+)
+LOOP
+insert into prt_pcmp_media
+(mediatype_id,
+media_id,
+prt_cmpt_id,
+prt_party_id,
+prt_cm_id,
+prt_cmt_id,
+prt_prt_id,
+prt_pcm_from_date,
+prt_pcmp_from_date)
+values (prt_pcmp_media_res.mediatype_id,
+new_in_crddet_id,
+prt_pcmp_media_res.prt_cmpt_id,
+prt_pcmp_media_res.prt_party_id,
+prt_pcmp_media_res.prt_cm_id,
+prt_pcmp_media_res.prt_cmt_id,
+prt_pcmp_media_res.prt_prt_id,
+prt_pcmp_media_res.prt_pcm_from_date,
+prt_pcmp_media_res.prt_pcmp_from_date);
+END LOOP;
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CORRECT_PINPRINT_BATCHES
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CORRECT_PINPRINT_BATCHES" (
+    v_start_batch crddet.batch%TYPE
+) IS
+
+    v_tot_crdbtch_cnt   NUMBER := 0;
+    v_tot_card_cnt      NUMBER := 0;
+    v_branch_id         NUMBER := 0;
+    v_crdproduct_id     NUMBER := 0;
+    v_new_batch         NUMBER := v_start_batch;
+    v_group_count       NUMBER := 0;
+    v_cardcount         NUMBER := 0;
+    v_batchcount        NUMBER := 0;
+	v_batch				NUMBER := 0;
+
+    CURSOR crdsel_cur IS 
+	SELECT
+		cd.branch_id,
+		cd.crdproduct_id,
+		cd.batch,
+		COUNT(1)
+	FROM
+		crddet cd,
+		crdbtch cb
+	WHERE
+		cd.batch = cb.batch
+	GROUP BY
+		cd.branch_id,
+		cd.crdproduct_id,
+		cd.batch
+	ORDER BY 1, 2, 3;
+
+    CURSOR crdupd_cur (
+        v_branch_id       crddet.branch_id%TYPE,
+        v_crdproduct_id   crddet.crdproduct_id%TYPE,
+		v_batch			  crddet.batch%TYPE) IS
+	SELECT
+        id,
+        date_created
+	FROM
+        crddet
+	WHERE branch_id = v_branch_id
+    AND   crdproduct_id = v_crdproduct_id
+	AND   batch = v_batch;
+
+    TYPE type_crdrec_cur IS
+        TABLE OF crdupd_cur%rowtype INDEX BY PLS_INTEGER;
+    crdrec              type_crdrec_cur;
+
+BEGIN
+    OPEN crdsel_cur;
+    LOOP
+        FETCH crdsel_cur INTO v_branch_id, v_crdproduct_id, v_batch, v_group_count;
+        EXIT WHEN crdsel_cur%notfound;
+
+		-- Open cursor for the crddet using accdetid
+        OPEN crdupd_cur(v_branch_id, v_crdproduct_id, v_batch);
+		-- Update the crddet table with new accdet_id
+        LOOP
+            FETCH crdupd_cur BULK COLLECT INTO crdrec LIMIT 100;
+            EXIT WHEN crdrec.count = 0;
+            dbms_output.put_line('v_branch_id :: v_crdproduct_id:: count : ' ||v_branch_id||'|'||v_crdproduct_id||'|'||crdrec.count);
+
+            FOR idx IN 1..crdrec.count LOOP
+                IF ( crdrec.count < 100 )
+                THEN
+                    v_cardcount := crdrec.count;
+                ELSE
+                    v_cardcount := 100;
+                END IF;
+
+                IF ( idx < 2 )
+                THEN
+                    v_new_batch := v_new_batch + 1;
+                    v_batchcount := v_batchcount + 1;
+                    dbms_output.put_line(' v_branch_id :: v_crdproduct_id:: v_new_batch : ' || v_branch_id || '|' || v_crdproduct_id || '|' || v_new_batch);
+
+                    INSERT INTO crdbtch
+                        SELECT
+                            1,
+                            v_new_batch,
+                            inst_id,
+                            v_crdproduct_id,
+                            status,
+                            createdate,
+                            'PINCRXN-'||v_batch,
+                            v_cardcount,
+                            date_cardpro,
+                            date_pinpro,
+                            priority,
+                            btchtyp,
+                            delvaddr,
+                            batch_cat,
+                            options
+                        FROM
+                            crdbtch
+                        WHERE
+                            batch = v_batch;
+
+                    IF ( SQL%rowcount > 0 )
+                    THEN
+                        dbms_output.put_line('New Batch ' || v_new_batch || ' inserted from old batch ' || v_batch);
+                    END IF;
+
+                END IF;
+
+                UPDATE crddet
+				SET batch = v_new_batch
+                WHERE id = crdrec(idx).id
+				AND   batch = v_batch;
+
+                dbms_output.put_line('CRDDET_ID: ' || crdrec(idx).id || ' OLD BATCH NO: ' || v_batch || ' NEW BATCH NO: ' || v_new_batch);
+
+                v_tot_card_cnt := v_tot_card_cnt + 1;
+            END LOOP;
+
+            dbms_output.put_line('Committed '|| v_tot_card_cnt|| ' records in CRDDET ');
+            COMMIT;
+        END LOOP;
+
+        CLOSE crdupd_cur;
+        dbms_output.put_line('Total Cards Updated: '|| v_tot_card_cnt);
+        dbms_output.put_line('Total Batches Created: '|| v_batchcount);
+    END LOOP;
+
+    dbms_output.put_line('Final count of Total Batches Created: ' || v_batchcount);
+    CLOSE crdsel_cur;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CORRECT_PINPRINT_BATCHES_UPD
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CORRECT_PINPRINT_BATCHES_UPD" (
+    v_start_batch crddet.batch%TYPE
+) IS
+
+    v_tot_crdbtch_cnt   NUMBER := 0;
+    v_tot_card_cnt      NUMBER := 0;
+    v_branch_id         NUMBER := 0;
+    v_crdproduct_id     NUMBER := 0;
+    v_new_batch         NUMBER := v_start_batch;
+    v_group_count       NUMBER := 0;
+    v_cardcount         NUMBER := 0;
+    v_batchcount        NUMBER := 0;
+
+    CURSOR crdsel_cur IS SELECT
+        branch_id,
+        crdproduct_id,
+        COUNT(1)
+    FROM
+        crddet
+    --WHERE batch in (select batch from batch_uniq_20210112)
+    GROUP BY
+        branch_id,
+        crdproduct_id
+    ORDER BY 1, 2, 3;
+
+    CURSOR crdupd_cur (
+        v_branch_id       crddet.branch_id%TYPE,
+        v_crdproduct_id   crddet.crdproduct_id%TYPE
+    ) IS SELECT
+        id,
+        batch
+    FROM
+        crddet
+    WHERE branch_id = v_branch_id
+    AND   crdproduct_id = v_crdproduct_id;
+
+    TYPE type_crdrec_cur IS
+        TABLE OF crdupd_cur%rowtype INDEX BY PLS_INTEGER;
+    crdrec              type_crdrec_cur;
+BEGIN
+    OPEN crdsel_cur;
+    LOOP
+        FETCH crdsel_cur INTO v_branch_id,v_crdproduct_id,v_group_count;
+        EXIT WHEN crdsel_cur%notfound;
+
+        -- Open cursor for the crddet using accdetid
+        OPEN crdupd_cur(v_branch_id,v_crdproduct_id);
+        -- Update the crddet table with new accdet_id
+
+        LOOP
+            FETCH crdupd_cur BULK COLLECT INTO crdrec LIMIT 100;
+            EXIT WHEN crdrec.count = 0;
+
+            dbms_output.put_line(' v_branch_id :: v_crdproduct_id:: count : ' || v_branch_id || '|' || v_crdproduct_id || '|' || crdrec.count);
+
+            FOR idx IN 1..crdrec.count 
+            LOOP
+                IF
+                    ( crdrec.count < 100 )
+                THEN
+                    v_cardcount := crdrec.count;
+                ELSE
+                    v_cardcount := 100;
+                END IF;
+
+                IF( idx = 1 ) /* insert only 1st record for batch */
+                THEN
+                    v_new_batch := v_new_batch + 1;
+                    v_batchcount := v_batchcount + 1;
+
+                    dbms_output.put_line(' v_branch_id :: v_crdproduct_id:: v_new_batch : ' || v_branch_id || '|' || v_crdproduct_id || '|' || v_new_batch);
+                    INSERT INTO crdbtch
+                        SELECT
+                            1,
+                            v_new_batch,
+                            inst_id,
+                            v_crdproduct_id,
+                            status,
+                            createdate,
+                            'PINCRXN-'||crdrec(idx).batch,
+                            v_cardcount,
+                            date_cardpro,
+                            date_pinpro,
+                            priority,
+                            btchtyp,
+                            delvaddr,
+                            batch_cat,
+                            options
+                        FROM
+                            crdbtch
+                        WHERE
+                            batch = crdrec(idx).batch;
+
+                    IF ( SQL%rowcount > 0 )
+                    THEN
+                            dbms_output.put_line('New Batch ' || v_new_batch || ' inserted from old batch ' || crdrec(idx).batch);
+                    END IF;
+                END IF;
+
+                UPDATE crddet
+                SET batch = v_new_batch
+                WHERE id = crdrec(idx).id
+                AND   batch = crdrec(idx).batch;
+
+                dbms_output.put_line('CRDDET_ID: ' || crdrec(idx).id || ' OLD BATCH NO: ' || crdrec(idx).batch || ' NEW BATCH NO: ' || v_new_batch);
+
+                v_tot_card_cnt := v_tot_card_cnt + 1;
+            END LOOP;
+
+            dbms_output.put_line('Committed ' || v_tot_card_cnt || ' records in CRDDET ');
+            COMMIT;
+        END LOOP;
+
+        CLOSE crdupd_cur;
+        dbms_output.put_line('Total Cards Updated: '|| v_tot_card_cnt);
+        dbms_output.put_line('Total Batches Created: '|| v_batchcount);
+    END LOOP;
+
+    dbms_output.put_line('Final count of Total Batches Created: '|| v_batchcount);
+    CLOSE crdsel_cur;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CO_CONTEXT_SET_PENDING_EVENT
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CO_CONTEXT_SET_PENDING_EVENT" (state boolean,  id number) is
+	int_state number;
+begin
+	if(state= true) then
+		int_state:=1;
+	else
+		int_state:=0;
+	end if;
+
+	update co_context set event_pending=int_state where co_context.id=id;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CRDACT_NOTIFY
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CRDACT_NOTIFY" 
+        (
+                in_crddet_id    CRDEVENT.crddet_id%TYPE
+        )
+as
+                v_alrt_params           REALTIME_PUBLISH_TBL.ALRT_PARAMS%TYPE;
+                v_evt_id                REALTIME_PUBLISH_TBL.EVT_ID%TYPE;
+                v_cust_code             CUSTDET.custcode%TYPE;
+                v_pinmailer_identifer   CRDPRODUCT.options%TYPE;
+                v_inst_id               CRDPRODUCT.inst_id%TYPE;
+                v_accno                 ACCDET.ACCNO%TYPE;
+
+begin
+
+        DBMS_OUTPUT.put_line ('Into Card Activation - Start');
+
+        --Get the customer detail record.
+        select
+                CU.custcode,
+                substr(CP.options,33,1),
+                cp.inst_id,
+                AC.accno
+        into
+                v_cust_code,
+                v_pinmailer_identifer,
+                v_inst_id,
+                v_accno
+        from
+                CUSTDET CU,
+                CRDDET CD,
+                CRDPRODUCT CP,
+                ACCDET AC
+        where
+                CD.id =in_crddet_id and
+                CU.id = CD.custdet_id and
+                CP.inst_id = CU.inst_id and
+                CP.id = CD.crdproduct_id and
+                CD.accdet_id = AC.id;
+
+        DBMS_OUTPUT.put_line ('select success');
+
+        --Build the event message content
+        --v_evData := 'PAN:' || v_pan_display || ';DATE:' ||  sdate ;
+        v_alrt_params := NULL;
+
+        --Set the event type
+        v_evt_id := 'F_LG_DC_AC';       --Card activation
+
+        /** send notifications only for PNB. Ignore for other INSTITUTIONS. **/
+        if( v_inst_id = 107) then
+        --Create the messages
+        createnotify(
+                v_cust_code,
+                v_evt_id,
+                v_alrt_params,
+                v_accno
+                );
+        end if;
+
+
+DBMS_OUTPUT.put_line ('Into Card activation - END');
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CRDSTAT_NOTIFY
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CRDSTAT_NOTIFY" 
+	(
+		in_crddet_id		CRDDET.id%TYPE,
+		in_new_statcode		CRDDET.statcode%TYPE,
+		in_old_statcode		CRDDET.statcode%TYPE,
+		in_pan_display    CRDDET.pan_display%TYPE,
+		in_custdet_id     CRDDET.custdet_id%TYPE,
+		in_crdproduct_id		CRDDET.crdproduct_id%TYPE
+
+	)
+is
+		v_evData	 NOTIF_LOG.evdata%TYPE;
+		v_evType	 NOTIF_LOG.evtype%TYPE;
+		v_inst_id	 CUSTDET.inst_id%TYPE;
+		v_prflang	 CUSTDET.prflang%TYPE;
+		v_usrdata2	 CUSTDET.usrdata2%TYPE;
+		v_mob_tel  	CUSTDET.mob_tel%TYPE;
+		v_email	 	CUSTDET.email%TYPE;
+		sdate		DATE;
+		stime           VARCHAR2(10);
+		v_fecode	CRDROUTING.fecode%TYPE;
+
+begin
+
+	--Get the customer detail record.
+	SELECT
+		CF.INST_ID,CRT.FECODE,CU.USRDATA2,CU.PRFLANG,CU.MOB_TEL,CU.EMAIL
+	INTO
+		v_inst_id,v_fecode,v_usrdata2, v_prflang, v_mob_tel, v_email
+	FROM
+		CRDPRODUCT CP,CRDFORMAT CF,CRDROUTING CRT, CUSTDET CU
+	WHERE
+		CF.ID = CP.CRDFORMAT_ID AND
+		CRT.IID = CF.IID AND
+		CP.ID = in_crdproduct_id AND
+		CU.ID = in_custdet_id;
+
+	IF v_inst_id in (109) THEN
+
+		v_evData := 'PAN_END=' || in_pan_display || ';IFE=' || v_fecode;
+
+		-- Customized For Event Type CARD BLOCKING #61
+		IF(in_new_statcode = '06') THEN
+			v_evType := 61;
+		END IF;
+
+		-- Customized For Event Type CARD UNBLOCK #62
+		IF(in_old_statcode = 6 and in_new_statcode = 0) THEN
+			v_evType := 62;
+		END IF;
+
+		-- Customized For Event Type CARD HOTLISTING #63
+		IF(in_new_statcode = 4 or in_new_statcode = 5) THEN
+			v_evType := 61;
+		END IF;
+
+		--Customized For Event Type CARD CLOSURE #69
+		IF(in_new_statcode = 7) THEN
+			v_evType := 69;
+		END IF;
+
+	-- Generate the messages
+
+		IF ( v_evType IN (61, 62, 69) ) THEN
+			gennotify
+			(
+					v_evtype,
+					v_evdata,
+					v_mob_tel,
+					v_email,
+					v_usrdata2,
+					v_inst_id,
+					v_prflang,
+					5
+			);
+		END IF;
+	END IF;
+
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CRDUSG_NOTIFY
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CRDUSG_NOTIFY" 
+(
+	in_crddet_id    CRDDET.id%TYPE,
+	in_oldcrdusg	CRDDET_X.CRDUSAGE_FLAG%TYPE,
+	in_newcrdusg	CRDDET_X.CRDUSAGE_FLAG%TYPE
+)
+IS
+	v_msgdata			NOTIFYMSGLOG.msgdata%TYPE;
+	v_evtype			NOTIFYMSGLOG.evtype%TYPE;
+	v_inst_id			CUSTDET.inst_id%TYPE;
+	v_prflang			CUSTDET.prflang%TYPE;
+	v_usrdata2			CUSTDET.usrdata2%TYPE;
+	v_mob_tel			CUSTDET.mob_tel%TYPE;
+	v_email				CUSTDET.email%TYPE;
+	v_fecode			CRDROUTING.fecode%TYPE;
+	v_pan_display		CRDDET.pan_display%TYPE;
+	v_enabletmp			VARCHAR2(50) := '';
+	v_disabletmp		VARCHAR2(50) := '';
+
+BEGIN
+
+	--Get the customer detail record.
+	SELECT
+		CF.INST_ID,CRT.FECODE,CU.USRDATA2,CU.PRFLANG,CU.MOB_TEL,CU.EMAIL,CR.PAN_DISPLAY
+	INTO
+		v_inst_id,v_fecode,v_usrdata2, v_prflang, v_mob_tel, v_email,v_pan_display
+	FROM
+		CRDPRODUCT CP,CRDFORMAT CF,CRDROUTING CRT, CUSTDET CU, CRDDET CR
+	WHERE
+		CF.ID = CP.CRDFORMAT_ID AND
+		CRT.IID = CF.IID AND
+		CP.ID = CR.CRDPRODUCT_ID AND
+		CU.ID = CR.CUSTDET_ID AND
+		CR.ID = in_crddet_id;
+
+	IF v_inst_id IN (109) THEN
+
+		IF( SUBSTR(in_oldcrdusg,1,1) != SUBSTR(in_newcrdusg,1,1)) THEN
+			IF SUBSTR(in_newcrdusg,1,1) = '1' THEN
+				v_enabletmp := 'ATM/';
+			ELSE
+				v_disabletmp := 'ATM/';
+			END IF;
+		END IF;
+
+		IF( SUBSTR(in_oldcrdusg,2,1) != SUBSTR(in_newcrdusg,2,1)) THEN
+			IF SUBSTR(in_newcrdusg,2,1) = '1' THEN
+				v_enabletmp := v_enabletmp||'POS/';
+			ELSE
+				v_disabletmp := v_disabletmp||'POS/';
+			END IF;
+		END IF;
+
+		IF( SUBSTR(in_oldcrdusg,3,1) != SUBSTR(in_newcrdusg,3,1)) THEN
+			IF SUBSTR(in_newcrdusg,3,1) = '1' THEN
+				v_enabletmp := v_enabletmp||'ECOM/';
+			ELSE
+				v_disabletmp := v_disabletmp||'ECOM/';
+			END IF;
+		END IF;
+
+		IF( SUBSTR(in_oldcrdusg,4,1) != SUBSTR(in_newcrdusg,4,1)) THEN
+			IF SUBSTR(in_newcrdusg,4,1) = '1' THEN
+				v_enabletmp := v_enabletmp||'TAP-N-PAY';
+			ELSE
+				v_disabletmp := v_disabletmp||'TAP-N-PAY';
+			END IF;
+		END IF;
+
+		IF SUBSTR(v_enabletmp, LENGTH(v_enabletmp), 1) = '/' THEN
+			v_enabletmp := SUBSTR(v_enabletmp, 1, LENGTH(v_enabletmp)-1);
+		END IF;
+
+		IF SUBSTR(v_disabletmp, LENGTH(v_disabletmp), 1) = '/' THEN
+			v_disabletmp := SUBSTR(v_disabletmp, 1, LENGTH(v_disabletmp)-1);
+		END IF;
+
+		v_evtype := 72;
+
+		IF length(v_enabletmp) > 0 THEN
+			--Build the event message content
+			v_msgdata := 'CHANNEL='||v_enabletmp||';ACTION=enabled'||';PAN_END='|| v_pan_display||';IFE='||v_fecode;
+
+			--Generate the messages
+			gennotify_cortex
+			(
+				v_evtype,
+				v_msgdata,
+				v_mob_tel,
+				v_email,
+				v_usrdata2,
+				v_inst_id,
+				v_prflang,
+				6,
+				in_crddet_id
+			);
+		END IF;
+
+		IF length(v_disabletmp) > 0 THEN
+			--Build the event message content
+			v_msgdata := 'CHANNEL='||v_disabletmp||';ACTION=disabled'||';PAN_END='|| v_pan_display||';IFE='||v_fecode;
+
+			--Generate the messages
+			gennotify_cortex
+			(
+				v_evtype,
+				v_msgdata,
+				v_mob_tel,
+				v_email,
+				v_usrdata2,
+				v_inst_id,
+				v_prflang,
+				6,
+				in_crddet_id
+			);
+		END IF;
+
+
+
+	END IF;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CRD_CHG_ACCSTAT
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CRD_CHG_ACCSTAT" 
+(
+	in_crddet_id	in cdsthst.crddet_id%TYPE,
+	in_old_statcode	in cdsthst.old_statcode%TYPE,
+	in_new_statcode	in cdsthst.new_statcode%TYPE
+)
+is
+	tmp NUMBER(5,0);
+begin
+	-- create or replace procedure does nothing
+	-- create customer specific create or replace procedure insteas if need (as in mbr26)
+	tmp := 0;
+	return;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CREATENOTIFY
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CREATENOTIFY" (
+    in_cust_code CUSTDET.CUSTCODE%TYPE,
+    in_evt_id REALTIME_PUBLISH_TBL.EVT_ID%TYPE,
+    in_alrt_params REALTIME_PUBLISH_TBL.ALRT_PARAMS%TYPE,
+	in_accno	ACCDET.ACCNO%TYPE )
+AS
+  v_evt_gen_id CRDEVENT.ID%TYPE;
+  v_systime REALTIME_PUBLISH_TBL.EVT_GEN_TIME%TYPE;
+  v_accno ACCDET.ACCNO%TYPE;
+BEGIN
+  SELECT rept_sequence.nextval INTO v_evt_gen_id FROM dual ;
+  DBMS_OUTPUT.put_line (':v_evt_gen_id');
+
+  SELECT sysdate into v_systime from dual;
+
+  IF (SUBSTR(in_cust_code, 1, 7) <> '9999999') THEN
+    INSERT
+    INTO REALTIME_PUBLISH_TBL
+      (
+        DB_TS,
+        BANK_ID,
+        EVT_ID,
+        EVT_GEN_ID,
+        EVT_HOST_ID,
+        EVT_TYPE,
+        EVT_CORRELATION_ID,
+        CUST_ID,
+        CORP_ID,
+        CUST_HOST_ID,
+        ENTITY_ID,
+        LANG_CODE,
+        ALRT_PARAMS,
+        EVT_GEN_TIME,
+        EVT_TIME_ZONE,
+        FREE_TEXT_1,
+        FREE_TEXT_2,
+        FREE_TEXT_3,
+        R_MOD_USER_ID,
+        R_MOD_TIME,
+        R_CRE_USER_ID,
+        R_CRE_TIME,
+        DEL_FLG,
+        RELATED_PARTY_ID
+      )
+      VALUES
+      (
+        1,
+        '024',
+        in_evt_id, --evt_id
+        'DCMS_'||v_evt_gen_id,
+        'FIN',
+        'R',
+        'DCMS_'||v_evt_gen_id,
+        in_cust_code,
+        in_cust_code,
+        'EBNK',
+        in_accno,
+        'EN_US',
+        in_alrt_params,
+        v_systime,
+        'GMT+05:00',
+        '',
+        '',
+        '',
+        'BATCH',
+        v_systime,
+        'BATCH',
+        v_systime,
+        'N',
+        ''
+      );
+  ELSE
+     DBMS_OUTPUT.put_line ('Dummy Customer Code. No need to insert.');
+  END IF;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CREATENOTIFY_CORTEX
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CREATENOTIFY_CORTEX" 
+      (
+        in_sdate        NOTIFYMSGLOG.bus_date%TYPE,
+        in_channel      NUMBER,
+        in_evtype       NOTIFYMSGLOG.evtype%TYPE,
+        in_msgdata       NOTIFYMSGLOG.msgdata%TYPE,
+        in_mob_tel      CUSTDET.mob_tel%TYPE,
+        in_email        CUSTDET.email%TYPE,
+        in_inst_id      CUSTDET.inst_id%TYPE,
+        in_prflang      CUSTDET.prflang%TYPE,
+        v_chanl         number,
+        in_crddet_id    CRDDET.id%TYPE DEFAULT 0
+      )
+as
+begin
+
+-- DBMS_OUTPUT.put_line ('B4 Insert into notif_log');
+
+if ( bitand(v_chanl,1)> 0 and bitand(v_chanl,3) > 0) then
+
+-- DBMS_OUTPUT.put_line ('B4 Insert into notif_log for SMS ');
+
+        if( SUBSTR(in_mob_tel,1,1) = ' ')then
+                return;
+        end if;
+    INSERT INTO NOTIFYMSGLOG (
+                VERNO_CTX,
+                ID,
+                INST_ID,
+                CRDDET_ID,
+                TLOG_ID,
+                CHANNEL,
+                DEST_QUEUE,
+                ADDRESS_DATA,
+                WHEN_CREATED,
+                BUS_DATE,
+                STATUS,
+                EVTYPE,
+                PRFLANG,
+                MSGDATA )
+    VALUES (
+                1,
+                0,                      --id
+                in_inst_id,             --inst_id
+                in_crddet_id,           --crddet id
+                0,
+                1,                      --Channel
+                'SMSQUEUE',             --Dest_queue
+                in_mob_tel,             --Address_data
+                to_char(sysdate,'YYYYMMDDHH24MISS')||'000', --when_created
+                in_sdate,               --bus_date
+                1,                      --status
+                in_evtype,              --evtype
+                in_prflang,             --msgdata
+                in_msgdata              --prflang
+           );
+
+end if;
+
+if ( bitand(v_chanl,2)> 0 and bitand(v_chanl,3) > 0) then
+
+-- DBMS_OUTPUT.put_line ('B4 Insert into notif_log for EMAIL ');
+
+        if( SUBSTR(in_email,1,1) = ' ')then
+                return;
+        end if;
+
+    INSERT INTO NOTIFYMSGLOG (
+                VERNO_CTX,
+                ID,
+                INST_ID,
+                CRDDET_ID,
+                TLOG_ID,
+                CHANNEL,
+                DEST_QUEUE,
+                ADDRESS_DATA,
+                WHEN_CREATED,
+                BUS_DATE,
+                STATUS,
+                EVTYPE,
+                PRFLANG,
+                MSGDATA )
+    VALUES (
+                1,
+                0,                      --id
+                in_inst_id,             --inst_id
+                in_crddet_id,           --crddet id
+                0,
+                2,                      --Channel
+                'EMAILQUEUE',           --Dest_queue
+                in_mob_tel,             --Address_data
+                to_char(sysdate,'YYYYMMDDHH24MISS')||'000', --when_created
+                in_sdate,               --bus_date
+                1,                      --status
+                in_evtype,              --evtype
+                in_prflang,             --msgdata
+                in_msgdata              --prflang
+        );
+end if;
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CREATE_CRDPRODSECCHK
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CREATE_CRDPRODSECCHK" (inst_id IN inst.id%type, crdproduct_id IN crdproduct.id%type)
+is
+	in_inst_id      inst.id%type := inst_id;
+	in_crdproduct_id	crdproduct.id%type := crdproduct_id;
+begin
+
+	null;
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CREATE_INSTSECCHK
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CREATE_INSTSECCHK" (inst_id IN inst.id%type)
+is
+	in_inst_id      inst.id%type := inst_id;
+begin
+
+	null;
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CREATE_NEW_CRDBTCH
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CREATE_NEW_CRDBTCH" (
+new_batch           out varchar2,
+inst_id             in number,
+crdproduct_id       in number,
+status              in number,
+createdate          in date,
+usr                 in varchar2,
+cardcount           in number,
+date_cardpro        in date,
+date_pinpro         in date,
+priority            in char,
+btchtyp             in number,
+delvaddr            in char,
+batch_cat           in varchar2,
+options             in varchar2
+)
+as
+in_batch              number(10,0) ;
+begin
+	new_batch := 0;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure CUST_UPD_CRDDET_ID_CRDSTATHIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."CUST_UPD_CRDDET_ID_CRDSTATHIST" IS
+
+	v_crddet_id		number(10) := 0;
+	ErrorMsg		varchar2(100):= null;
+
+	CURSOR MIG_CUR1 IS
+	SELECT distinct mig.ISS_HOST_CRDREF, mig.PAN
+	FROM crdbasemig_x mig, CRDSTATHIST CHST
+	WHERE mig.PAN = CHST.PAN
+	AND VPAN is NOT NULL;
+
+	TYPE type_rec_cur1 IS
+        TABLE OF MIG_CUR1%rowtype INDEX BY PLS_INTEGER;
+    rec1   type_rec_cur1;
+
+	CURSOR MIG_CUR2 IS
+	SELECT * FROM CRDSTATHIST WHERE VPAN IS NOT NULL
+	ORDER BY PAN, DATE_SET, TIME_SET;
+
+	TYPE type_rec_cur2 IS
+        TABLE OF MIG_CUR2%rowtype INDEX BY PLS_INTEGER;
+    rec2   type_rec_cur2;
+
+BEGIN
+	OPEN MIG_CUR1;
+	LOOP
+		FETCH MIG_CUR1 BULK COLLECT INTO rec1 LIMIT 25000;
+		EXIT WHEN rec1.count = 0;
+
+		FOR idx IN 1..rec1.count
+        LOOP
+			UPDATE CRDSTATHIST SET VPAN = rec1(idx).ISS_HOST_CRDREF WHERE PAN = rec1(idx).PAN;
+		END LOOP;
+	END LOOP;
+	CLOSE MIG_CUR1;
+	COMMIT;
+
+	OPEN MIG_CUR2;
+	LOOP
+		FETCH MIG_CUR2 BULK COLLECT INTO rec2 LIMIT 25000;
+		EXIT WHEN rec2.count = 0;
+
+		FOR idx IN 1..rec2.count
+        LOOP
+			BEGIN
+				ErrorMsg := 'While Select from CRDDET for VPAN - '|| rec2(idx).VPAN;
+				SELECT ID INTO v_crddet_id FROM CRDDET WHERE ISS_HOST_CRDREF = rec2(idx).VPAN;
+
+				ErrorMsg := 'While Insert into CDSTHST for RECORD ID - '|| rec2(idx).ID;
+				INSERT INTO CDSTHST (OLD_STATCODE, NEW_STATCODE, DATE_SET, TIME_SET, WHY_SET, WHO_SET, CTXDATE, CRDDET_ID, EXPDATE)
+				VALUES (rec2(idx).old_statcode, rec2(idx).new_statcode, rec2(idx).date_set, rec2(idx).time_set,
+						rec2(idx).why_set, rec2(idx).who_set, sysdate, v_crddet_id, rec2(idx).expdate);
+			EXCEPTION
+				WHEN OTHERS THEN
+					dbms_output.put_line ('Error While '||ErrorMsg);
+			END;
+
+		END LOOP;
+	END LOOP;
+	CLOSE MIG_CUR2;
+
+	COMMIT;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure DECREASE_CARDCOUNT_IN_BATCH
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."DECREASE_CARDCOUNT_IN_BATCH" ( batch number )
+as
+in_batch       number(10,0) := batch;
+begin
+	NULL;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure DELETE_ACC_TYPE_50
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."DELETE_ACC_TYPE_50" 
+IS
+    CURSOR main_cursor IS
+    SELECT
+        id
+    FROM
+        accdet
+    WHERE
+        typecode = '50';
+
+    TYPE acctype_cur_tab IS
+        TABLE OF main_cursor%rowtype INDEX BY PLS_INTEGER;
+    acctype_tab_row
+    acctype_cur_tab;
+
+BEGIN
+    OPEN main_cursor;
+    LOOP
+        FETCH main_cursor BULK COLLECT INTO acctype_tab_row LIMIT 5000;
+        EXIT WHEN acctype_tab_row.count = 0;
+        FORALL i IN 1..acctype_tab_row.count
+            DELETE crdacc
+            WHERE
+                accdet_id = acctype_tab_row(i).id;
+
+        COMMIT;
+        FORALL i IN 1..acctype_tab_row.count
+            DELETE accbalslog
+            WHERE
+                accdet_id = acctype_tab_row(i).id;
+
+        COMMIT;
+        FORALL i IN 1..acctype_tab_row.count
+            DELETE crddet
+            WHERE
+                accdet_id = acctype_tab_row(i).id;
+
+        COMMIT;
+    END LOOP;
+
+    CLOSE main_cursor;
+END delete_acc_type_50;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure DEL_EUROSTR
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."DEL_EUROSTR" (del_id_IN IN number) is
+del_id number(20,0) := del_id_IN;
+begin
+	delete from eurostr where eurostr.id=del_id;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure DERIVE_CARD_BATCH
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."DERIVE_CARD_BATCH" (
+new_batch   out      number,
+batch       in       number,
+		crdproduct  in       number)
+as
+		-- output batch
+		out_batch           number(5, 0);
+begin
+	new_batch := 0;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure DISPATCH_NOTIFY
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."DISPATCH_NOTIFY" 
+        (
+                in_batch        BATCHLOG.batch%TYPE,
+                in_barcode  BATCHLOG.barcode%TYPE
+        )
+        as
+                v_alrt_params           REALTIME_PUBLISH_TBL.ALRT_PARAMS%TYPE;
+                v_evt_id                REALTIME_PUBLISH_TBL.EVT_ID%TYPE;
+                v_cust_code             CUSTDET.custcode%TYPE;
+                v_accno                 ACCDET.accno%TYPE;
+--              v_barcode               BATCHLOG.barcode%TYPE;
+
+                CURSOR dispatch_notify_cur IS
+                select
+                        CU.custcode,
+                        AC.accno
+--                      BL.barcode
+                from
+                        CUSTDET CU,
+                        CRDDET CD,
+                        ACCDET AC
+--                      BATCHLOG BL
+                where
+--                      BL.batch = in_batch and
+                        CD.batch = in_batch and
+                        CU.id = CD.custdet_id and
+                        AC.id = CD.accdet_id;
+
+begin
+
+        --DBMS_OUTPUT.put_line ('Perso-Dispatch-Notification----Start');
+
+        OPEN dispatch_notify_cur;
+
+        --WHILE FETCH_STATUS = 0
+        LOOP
+
+                FETCH dispatch_notify_cur
+                INTO v_cust_code, v_accno;
+                EXIT WHEN dispatch_notify_cur%NOTFOUND;
+
+
+        --Build the event message content
+        v_alrt_params := 'SOURCE=Speed Post|'||'BARCODE='||in_barcode||'|LINK=www.indiapost.gov.in.';
+
+        --Set the event type
+        v_evt_id := 'F_LG_DC_CO';       --Perso card dispatch
+
+        --Create the messages
+        createnotify(
+                v_cust_code,
+                v_evt_id,
+                v_alrt_params,
+                v_accno
+        );
+
+        END LOOP;
+
+        CLOSE dispatch_notify_cur ;
+
+        DBMS_OUTPUT.put_line ('Into Perso-Dispatch-Notification END');
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure DISPATCH_NOTIFY_EMAIL
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."DISPATCH_NOTIFY_EMAIL" 
+	(
+		in_batch		BATCHLOG.batch%TYPE,
+		in_barcode		BATCHLOG.barcode%TYPE,
+		in_branch_id		BATCHLOG.branch_id%TYPE,
+		in_disp_date		BATCHLOG.disp_date%TYPE	)
+as
+		v_msgData	 	NOTIFYMSGLOG.msgdata%TYPE;
+		v_evType	 	NOTIFYMSGLOG.evtype%TYPE;
+		v_inst_id	 	NOTIFYMSGLOG.inst_id%TYPE;
+		v_prflang	 	NOTIFYMSGLOG.prflang%TYPE;
+		v_usrdata2	 	CUSTDET.usrdata2%TYPE;
+		v_mob_tel  		CUSTDET.mob_tel%TYPE;
+		v_email			CUSTDET.email%TYPE;
+		v_brncode		BRANCH.brncode%TYPE;
+		v_brncode_first4_digits	BRANCH.brncode%TYPE;
+		v_crdproduct_descr	CRDPRODUCT.descr%TYPE;
+		v_cardcount		CRDBTCH.cardcount%TYPE;
+		sdate			DATE;
+begin
+
+
+--	DBMS_OUTPUT.put_line ('crddetid:'||in_crddet_id);
+
+	--Get the customer detail record.
+--	select
+--		BR.inst_id,
+--		BR.brncode
+--	BR.contactname
+--	into
+--		v_inst_id,
+--		v_brncode
+--	from
+--		BRANCH BR
+--	where
+--     		BR.id = in_branch_id;
+
+	select
+		BR.BRNCODE,
+		CP.DESCR,
+		CB.CARDCOUNT,
+		CB.INST_ID
+	into
+		v_brncode,
+		v_crdproduct_descr,
+		v_cardcount,
+		v_inst_id
+	from
+		BRANCH BR,
+		CRDPRODUCT CP,
+		CRDBTCH CB
+	where
+		BR.ID = in_branch_id and
+		CB.BATCH = in_batch and
+		CP.ID = CB.CRDPRODUCT_ID;
+
+	v_brncode_first4_digits := SUBSTR( v_brncode,0,4 );
+
+	DBMS_OUTPUT.put_line ('brncode_f4:'||v_brncode_first4_digits);
+
+
+	--Build the event message content
+	v_msgData := 'Cardproduct:' || v_crdproduct_descr || ',SBC_Number:' || in_batch|| ',Quantity:' || v_cardcount || ',dispatch_date:' || in_disp_date ||  ',Barcode:' || in_barcode ;
+
+	--Set the event type
+	v_evType := 1; 	--Perso card dispatch
+
+	v_usrdata2 := '222222222222';
+
+	v_prflang := 'EN';
+
+	v_email := 'bo' || v_brncode_first4_digits ||'@pnb.co.in';
+	DBMS_OUTPUT.put_line ('email:'||v_email);
+
+	v_mob_tel := ' ';
+
+	--Generate the messages
+	gennotify(
+		v_evType,
+		v_msgData,
+		v_mob_tel,
+		v_email,
+		v_usrdata2,
+		v_inst_id,
+		v_prflang,
+		9
+	);
+
+DBMS_OUTPUT.put_line ('Into carddLinkMsg END');
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure GENNOTIFY
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."GENNOTIFY" 
+      (
+        in_evtype       NOTIFYMSGLOG.evtype%TYPE,
+        in_msgdata      NOTIFYMSGLOG.msgdata%TYPE,
+        in_mob_tel      CUSTDET.mob_tel%TYPE,
+        in_email        CUSTDET.email%TYPE,
+        in_usrdata2     CUSTDET.usrdata2%TYPE,
+        in_inst_id      CUSTDET.inst_id%TYPE,
+        in_prflang      CUSTDET.prflang%TYPE,
+        notifIdx        NUMBER,
+        in_crddet_id    CRDDET.id%TYPE DEFAULT 0
+      )
+as
+        notifInd        CHAR(1);
+        notifNum        NUMBER;
+        sdate           DATE;
+begin
+        notifInd := SUBSTR(in_usrdata2, notifIdx, 1);
+        notifNum := ASCII(notifInd) - 48;
+
+--      DBMS_OUTPUT.put_line ('Into gennotif Start');
+--      DBMS_OUTPUT.put_line ('NotifyNum  '|| notifNum);
+
+        if(notifNum >= 0 and notifNum <= 9) then
+                SELECT DATE_T INTO SDATE FROM MSC
+                        WHERE TAG = 'cursysdate' AND IDX = 1;
+        else
+                return;
+        end if;
+        createnotify_cortex(
+                sdate,
+                0,
+                in_evtype,
+                in_msgdata,
+                in_mob_tel,
+                in_email,
+                in_inst_id,
+                in_prflang,
+                notifNum,
+                in_crddet_id
+        );
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure GENNOTIFY_CORTEX
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."GENNOTIFY_CORTEX" 
+      (
+        in_evtype       NOTIFYMSGLOG.evtype%TYPE,
+        in_msgdata      NOTIFYMSGLOG.msgdata%TYPE,
+        in_mob_tel      CUSTDET.mob_tel%TYPE,
+        in_email        CUSTDET.email%TYPE,
+        in_usrdata2     CUSTDET.usrdata2%TYPE,
+        in_inst_id      CUSTDET.inst_id%TYPE,
+        in_prflang      CUSTDET.prflang%TYPE,
+        notifIdx        NUMBER,
+        in_crddet_id    CRDDET.id%TYPE DEFAULT 0
+      )
+as
+        notifInd        CHAR(1);
+        notifNum        NUMBER;
+        sdate           DATE;
+begin
+        notifInd := SUBSTR(in_usrdata2, notifIdx, 1);
+        notifNum := ASCII(notifInd) - 48;
+
+--      DBMS_OUTPUT.put_line ('Into gennotif Start');
+--      DBMS_OUTPUT.put_line ('NotifyNum  '|| notifNum);
+
+        if(notifNum >= 0 and notifNum <= 9) then
+                SELECT DATE_T INTO SDATE FROM MSC
+                        WHERE TAG = 'cursysdate' AND IDX = 1;
+        else
+                return;
+        end if;
+        createnotify_cortex(
+                sdate,
+                0,
+                in_evtype,
+                in_msgdata,
+                in_mob_tel,
+                in_email,
+                in_inst_id,
+                in_prflang,
+                notifNum,
+                in_crddet_id
+        );
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure INCREASE_CARDCOUNT_IN_BATCH
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."INCREASE_CARDCOUNT_IN_BATCH" (
+new_batch           out number,
+batch               in  number,
+inst_id             in  number,
+crdproduct_id       in  number,
+status              in  number,
+createdate          in  date,
+usr                 in  varchar2,
+cardcount           in  number,
+date_cardpro        in  date,
+date_pinpro         in  date,
+priority            in  char,
+btchtyp             in  number,
+delvaddr            in  char,
+batch_cat           in  varchar2,
+options             in  varchar2
+	)
+as
+in_batch                  number(10,0) := batch;
+begin
+	new_batch := 0;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure LIMITPROFILE_NOTIFY
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."LIMITPROFILE_NOTIFY" 
+(
+	in_crddet_id    CRDDET.id%TYPE,
+	in_newlimitcode	CRDDET_X.LIMITPROFILE%TYPE
+)
+IS
+	v_msgdata			NOTIFYMSGLOG.msgdata%TYPE;
+	v_evtype			NOTIFYMSGLOG.evtype%TYPE;
+	v_inst_id			CUSTDET.inst_id%TYPE;
+	v_prflang			CUSTDET.prflang%TYPE;
+	v_usrdata2			CUSTDET.usrdata2%TYPE;
+	v_mob_tel			CUSTDET.mob_tel%TYPE;
+	v_email				CUSTDET.email%TYPE;
+	v_fecode			CRDROUTING.fecode%TYPE;
+	v_pan_display		CRDDET.pan_display%TYPE;
+	v_selectlimit		VARCHAR2(50) :=' ';
+BEGIN
+
+	--Get the customer detail record.
+	SELECT
+		CF.INST_ID,CRT.FECODE,CU.USRDATA2,CU.PRFLANG,CU.MOB_TEL,CU.EMAIL,CR.PAN_DISPLAY
+	INTO
+		v_inst_id,v_fecode,v_usrdata2, v_prflang, v_mob_tel, v_email,v_pan_display
+	FROM
+		CRDPRODUCT CP,CRDFORMAT CF,CRDROUTING CRT, CUSTDET CU, CRDDET CR
+	WHERE
+		CF.ID = CP.CRDFORMAT_ID AND
+		CRT.IID = CF.IID AND
+		CP.ID = CR.CRDPRODUCT_ID AND
+		CU.ID = CR.CUSTDET_ID AND
+		CR.ID = in_crddet_id;
+
+	IF v_inst_id IN (109) THEN
+
+		SELECT
+			SUBSTR(SELECTLIMIT,1,LENGTH(SELECTLIMIT)-1) INTO v_selectlimit
+		FROM
+			(SELECT
+				(CASE WHEN DOM_ATM > 0 THEN 'ATM-'||DOM_ATM/1000||'K'||',' END ||
+				 CASE WHEN DOM_POS > 0 THEN 'POS-'||DOM_POS/1000||'K'||',' END ||
+				 CASE WHEN DOM_ECOM > 0 THEN 'ECOMM-'||DOM_ECOM/1000||'K'||',' END
+				 ) AS SELECTLIMIT
+			FROM LIMITDET WHERE  PROFILE = in_newlimitcode);
+
+		v_evtype := 73;
+
+		--Build the event message content
+		v_msgdata := 'LIMIT=' || v_selectlimit || ';PAN_END=' || v_pan_display || ';IFE=' || v_fecode;
+
+		--Generate the messages
+		gennotify_cortex
+		(
+			v_evtype,
+			v_msgdata,
+			v_mob_tel,
+			v_email,
+			v_usrdata2,
+			v_inst_id,
+			v_prflang,
+			6,
+			in_crddet_id
+		);
+	END IF;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure LOG_ACC_STATCHG
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."LOG_ACC_STATCHG" 
+(
+	in_inst_id	accdet.inst_id%TYPE,
+	in_branch_id	accdet.branch_id%TYPE,
+	in_currcode	accdet.currcode%TYPE,
+	in_accno	accdet.accno%TYPE,
+	in_statcode	accdet.statcode%TYPE,
+	in_blkamt	accdet.blkamt%TYPE,
+	in_avlbal	accdet.avlbal%TYPE,
+	in_unclrcredit	accdet.unclrcredit%TYPE
+)
+is
+	use_ai	number(10);
+	stdescr	accstatus.descr%TYPE;
+	sdate	date;
+	accdet_id accitems.accdet_id%TYPE;
+	crddet_id accitems.crddet_id%TYPE;
+	in_inst_id_cp      accdet.inst_id%TYPE := in_inst_id;
+	in_branch_id_cp      accdet.branch_id%TYPE := in_branch_id;
+begin
+	if in_inst_id_cp is null then
+in_inst_id_cp := 0;
+end if;
+
+	if in_branch_id_cp is null then
+in_branch_id_cp := 0;
+end if;
+	-- check the logging flag
+	begin
+		select long_t into use_ai from msc
+			where tag = 'use_accitems' and idx = 1;
+		if (use_ai <= 0) then
+			return;
+		end if;
+	exception when NO_DATA_FOUND then
+		return;
+	end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure MISC_NOTIFY
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."MISC_NOTIFY" 
+	(
+		in_crddet_id			CRDDET.id%TYPE,
+		in_new_catparams		CRDDET.cat_params%TYPE,
+		in_old_catparams		CRDDET.cat_params%TYPE,
+		in_pan_display    		CRDDET.pan_display%TYPE,
+		in_custdet_id     		CRDDET.custdet_id%TYPE,
+		in_crdproduct_id		CRDDET.crdproduct_id%TYPE
+	)
+IS
+		v_evData				NOTIFYMSGLOG.msgdata%TYPE;
+		v_evType				NOTIFYMSGLOG.evtype%TYPE;
+		v_inst_id	 			CUSTDET.inst_id%TYPE;
+		v_prflang	 			CUSTDET.prflang%TYPE;
+		v_usrdata2	 CUSTDET.usrdata2%TYPE;
+		v_mob_tel  	CUSTDET.mob_tel%TYPE;
+		v_email	 	CUSTDET.email%TYPE;
+		v_fecode	CRDROUTING.fecode%TYPE;
+		v_intlflag_new        CHAR(1);
+		v_intlflag_old        CHAR(1);
+BEGIN
+
+	--Get the customer detail record.
+	SELECT
+		CF.INST_ID,CRT.FECODE,CU.USRDATA2,CU.PRFLANG,CU.MOB_TEL,CU.EMAIL
+	INTO
+		v_inst_id,v_fecode,v_usrdata2, v_prflang, v_mob_tel, v_email
+	FROM
+		CRDPRODUCT CP,CRDFORMAT CF,CRDROUTING CRT, CUSTDET CU
+	WHERE
+		CF.ID = CP.CRDFORMAT_ID AND
+		CRT.IID = CF.IID AND
+		CP.ID = in_crdproduct_id AND
+		CU.ID = in_custdet_id;
+
+	IF v_inst_id in (109) THEN
+
+		v_evData := 'PAN_END=' || in_pan_display || ';IFE=' || v_fecode;
+
+		v_intlflag_new := SUBSTR(in_new_catparams,1,1);
+		v_intlflag_old := SUBSTR(in_old_catparams,1,1);
+
+		-- Customized For Event Type ENABLE#61
+		IF (v_intlflag_new = '1' and v_intlflag_old in ('0',' ')) THEN
+			v_evType := 70;
+		END IF;
+
+
+		-- Customized For Event Type DISABLE #61
+		IF (v_intlflag_new in ('0',' ') AND v_intlflag_old = '1') THEN
+			v_evType := 71;
+		END IF;
+
+		-- Generate the messages
+		IF ( v_evType IN (70,71) ) THEN
+			gennotify_cortex
+			(
+					v_evtype,
+					v_evdata,
+					v_mob_tel,
+					v_email,
+					v_usrdata2,
+					v_inst_id,
+					v_prflang,
+					6,
+					in_crddet_id
+			);
+		END IF;
+	END IF;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure NORMALISE_AND_TRIM_UNI_ACCNO
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."NORMALISE_AND_TRIM_UNI_ACCNO" 
+IS
+  --  v_tot_crdbtch_cnt NUMBER := 0;
+  v_tot_card_cnt NUMBER := 0;
+  v_trim_accno ACCDET.ACCNO%TYPE;
+  v_min_accdet_id NUMBER := 0;
+  v_max_accdet_id NUMBER := 0;
+  v_group_count   NUMBER := 0;
+  v_cardcount     NUMBER := 0;
+  --  v_batchcount      NUMBER := 0;
+  CURSOR trim_accno_cur
+  IS
+    SELECT trim_accno,
+      trim_accno_count,
+      min_id,
+      max_id
+    FROM uni_Accno_trimming_helper;
+  --    WHERE ROWNUM <= 10;
+  CURSOR crdupd_cur (v_trim_accno accdet.accno%TYPE, v_min_accdet_id crddet.accdet_id%TYPE, v_max_accdet_id crddet.accdet_id%TYPE)
+  IS
+    /*    SELECT id,
+    accdet_id
+    FROM crddet
+    WHERE accdet_id     != (v_max_accdet_id) -- or (v_min_accdet_id)
+    AND iss_host_crdref IN '%UN%'
+    AND accdet_id       IN
+    (SELECT id
+    FROM accdet
+    WHERE inst_id            = 110
+    AND LENGTH(accno)        = 19
+    AND SUBSTR(accno, 6, 13) = v_trim_accno
+    ); */
+    SELECT cd.id crddet_id,
+      ac.accno,
+      ac.id accdet_id,
+      SUBSTR(accno, 6, 13) trim_accno
+    FROM crddet cd,
+      accdet ac
+    WHERE cd.accdet_id = ac.id
+    AND ac.id         != v_max_accdet_id
+    AND ac.inst_id             = 110
+    AND LENGTH(ac.accno)         = 19
+    AND SUBSTR(ac.accno, 6, 13) in  (select trim_accno from uni_Accno_trimming_helper where trim_accno = v_trim_accno)
+    ORDER BY 4, 3, 1;
+    --    AND rownum <= 1000;
+  TYPE type_crdrec_cur
+IS
+  TABLE OF crdupd_cur%rowtype INDEX BY PLS_INTEGER;
+  crdrec type_crdrec_cur;
+BEGIN
+  OPEN trim_accno_cur;
+  LOOP
+    FETCH trim_accno_cur
+    INTO v_trim_accno,
+      v_group_count,
+      v_min_accdet_id,
+      v_max_accdet_id;
+    EXIT
+  WHEN trim_accno_cur%notfound;
+    dbms_output.put_line(' v_trim_accno :: v_min_accdet_id:: v_max_accdet_id:: ' || v_trim_accno || '|' || v_min_accdet_id || '|' || v_max_accdet_id );
+    -- Open cursor for the crddet using accdetid
+    OPEN crdupd_cur(v_trim_accno, v_min_accdet_id, v_max_accdet_id);
+    -- Update the crddet table with new accdet_id
+    LOOP
+      FETCH crdupd_cur BULK COLLECT INTO crdrec LIMIT 10000;
+      EXIT
+    WHEN crdrec.count = 0;
+      dbms_output.put_line(' v_trim_accno :: v_min_accdet_id:: v_max_accdet_id:: count : ' || v_trim_accno || '|' || v_min_accdet_id || '|' || v_max_accdet_id || '|' || crdrec.count );
+      FOR idx IN 1..crdrec.count
+      LOOP
+        UPDATE crddet SET accdet_id = v_max_accdet_id WHERE id = crdrec(idx).crddet_id;
+        dbms_output.put_line ('Updating crddet id [' || crdrec(idx).crddet_id || '] - Old ACCDET ID [' || crdrec(idx).accdet_id || '] New ACCDET ID [' || v_max_accdet_id || ']');
+        v_tot_card_cnt := v_tot_card_cnt + 1;
+      END LOOP;
+      dbms_output.put_line('Committed ' || v_tot_card_cnt || ' records in CRDDET ' );
+      COMMIT;
+    END LOOP;
+    CLOSE crdupd_cur;
+    dbms_output.put_line('Total Cards Updated: ' || v_tot_card_cnt);
+  END LOOP;
+  dbms_output.put_line('Total Cards Updated: ' || v_tot_card_cnt);
+  CLOSE trim_accno_cur;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure NORM_N_TRIM_UNI_ACCNO_ACCDET_X
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."NORM_N_TRIM_UNI_ACCNO_ACCDET_X" 
+IS
+  --  v_tot_crdbtch_cnt NUMBER := 0;
+  v_tot_accx_cnt NUMBER := 0;
+  v_trim_accno ACCDET.ACCNO%TYPE;
+  v_min_accdet_id NUMBER := 0;
+  v_max_accdet_id NUMBER := 0;
+  v_group_count   NUMBER := 0;
+  v_cardcount     NUMBER := 0;
+  --  v_batchcount      NUMBER := 0;
+  CURSOR trim_accno_cur
+  IS
+    SELECT trim_accno,
+      trim_accno_count,
+      min_id,
+      max_id
+    FROM uni_Accno_trimming_helper;
+  --    WHERE ROWNUM <= 10;
+  CURSOR crdupd_cur (v_trim_accno accdet.accno%TYPE, v_min_accdet_id accdet_x.accdet_id%TYPE, v_max_accdet_id accdet_x.accdet_id%TYPE)
+  IS
+    SELECT 
+	  cd.id id,
+      ac.accno,
+      ac.id accdet_id,
+      SUBSTR(accno, 6, 13) trim_accno
+    FROM accdet_x cd,
+      accdet ac
+    WHERE cd.accdet_id = ac.id
+    AND ac.id         != v_max_accdet_id
+    AND ac.inst_id             = 110
+    AND LENGTH(ac.accno)         = 19
+    AND SUBSTR(ac.accno, 6, 13) = v_trim_accno
+    ORDER BY 4, 3, 1;
+    --    AND rownum <= 1000;
+  TYPE type_crdrec_cur
+IS
+  TABLE OF crdupd_cur%rowtype INDEX BY PLS_INTEGER;
+  crdrec type_crdrec_cur;
+BEGIN
+  OPEN trim_accno_cur;
+  LOOP
+    FETCH trim_accno_cur
+    INTO v_trim_accno,
+      v_group_count,
+      v_min_accdet_id,
+      v_max_accdet_id;
+    EXIT
+  WHEN trim_accno_cur%notfound;
+    dbms_output.put_line(' v_trim_accno :: v_min_accdet_id:: v_max_accdet_id:: ' || v_trim_accno || '|' || v_min_accdet_id || '|' || v_max_accdet_id );
+    -- Open cursor for the accdet_x using accdetid
+    OPEN crdupd_cur(v_trim_accno, v_min_accdet_id, v_max_accdet_id);
+    -- delete all old accdet_ids from accdet_x
+    LOOP
+      FETCH crdupd_cur BULK COLLECT INTO crdrec LIMIT 10000;
+      EXIT
+    WHEN crdrec.count = 0;
+      dbms_output.put_line(' v_trim_accno :: v_min_accdet_id:: v_max_accdet_id:: count : ' || v_trim_accno || '|' || v_min_accdet_id || '|' || v_max_accdet_id || '|' || crdrec.count );
+      FOR idx IN 1..crdrec.count
+      LOOP
+        delete from accdet_x WHERE id = crdrec(idx).id;
+        dbms_output.put_line ('Deleting accdet_x id [' || crdrec(idx).id || '] - Old ACCDET ID [' || crdrec(idx).accdet_id || ']');
+        v_tot_accx_cnt := v_tot_accx_cnt + 1;
+      END LOOP;
+      dbms_output.put_line('Deleted ' || v_tot_accx_cnt || ' records in ACCDET_X ' );
+      COMMIT;
+    END LOOP;
+    CLOSE crdupd_cur;
+    dbms_output.put_line('Total ACCDET_X Deleted: ' || v_tot_accx_cnt);
+  END LOOP;
+  dbms_output.put_line('Total ACCDET_X Deleted: ' || v_tot_accx_cnt);
+  CLOSE trim_accno_cur;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure NORM_N_TRIM_UNI_ACCNO_CRDACC
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."NORM_N_TRIM_UNI_ACCNO_CRDACC" 
+IS
+  --  v_tot_crdbtch_cnt NUMBER := 0;
+  v_tot_card_cnt NUMBER := 0;
+  v_trim_accno ACCDET.ACCNO%TYPE;
+  v_min_accdet_id NUMBER := 0;
+  v_max_accdet_id NUMBER := 0;
+  v_group_count   NUMBER := 0;
+  v_cardcount     NUMBER := 0;
+  --  v_batchcount      NUMBER := 0;
+  CURSOR trim_accno_cur
+  IS
+    SELECT trim_accno,
+      trim_accno_count,
+      min_id,
+      max_id
+    FROM uni_Accno_trimming_helper;
+  --    WHERE ROWNUM <= 10;
+  CURSOR crdupd_cur (v_trim_accno accdet.accno%TYPE, v_min_accdet_id crdacc.accdet_id%TYPE, v_max_accdet_id crdacc.accdet_id%TYPE)
+  IS
+    SELECT 
+	  cd.crddet_id crddet_id,
+      ac.accno,
+      ac.id accdet_id,
+      SUBSTR(accno, 6, 13) trim_accno
+    FROM crdacc cd,
+      accdet ac
+    WHERE cd.accdet_id = ac.id
+    AND ac.id         != v_max_accdet_id
+    AND ac.inst_id             = 110
+    AND LENGTH(ac.accno)         = 19
+    AND SUBSTR(ac.accno, 6, 13) = v_trim_accno
+    ORDER BY 4, 3, 1;
+    --    AND rownum <= 1000;
+  TYPE type_crdrec_cur
+IS
+  TABLE OF crdupd_cur%rowtype INDEX BY PLS_INTEGER;
+  crdrec type_crdrec_cur;
+BEGIN
+  OPEN trim_accno_cur;
+  LOOP
+    FETCH trim_accno_cur
+    INTO v_trim_accno,
+      v_group_count,
+      v_min_accdet_id,
+      v_max_accdet_id;
+    EXIT
+  WHEN trim_accno_cur%notfound;
+    dbms_output.put_line(' v_trim_accno :: v_min_accdet_id:: v_max_accdet_id:: ' || v_trim_accno || '|' || v_min_accdet_id || '|' || v_max_accdet_id );
+    -- Open cursor for the crdacc using accdetid
+    OPEN crdupd_cur(v_trim_accno, v_min_accdet_id, v_max_accdet_id);
+    -- Update the crdacc table with new accdet_id
+    LOOP
+      FETCH crdupd_cur BULK COLLECT INTO crdrec LIMIT 10000;
+      EXIT
+    WHEN crdrec.count = 0;
+      dbms_output.put_line(' v_trim_accno :: v_min_accdet_id:: v_max_accdet_id:: count : ' || v_trim_accno || '|' || v_min_accdet_id || '|' || v_max_accdet_id || '|' || crdrec.count );
+      FOR idx IN 1..crdrec.count
+      LOOP
+        UPDATE crdacc SET accdet_id = v_max_accdet_id WHERE crddet_id = crdrec(idx).crddet_id;
+        dbms_output.put_line ('Updating crdacc crddet_id [' || crdrec(idx).crddet_id || '] - Old ACCDET ID [' || crdrec(idx).accdet_id || '] New ACCDET ID [' || v_max_accdet_id || ']');
+        v_tot_card_cnt := v_tot_card_cnt + 1;
+      END LOOP;
+      dbms_output.put_line('Committed ' || v_tot_card_cnt || ' records in CRDACC ' );
+      COMMIT;
+    END LOOP;
+    CLOSE crdupd_cur;
+    dbms_output.put_line('Total CardAccs Updated: ' || v_tot_card_cnt);
+  END LOOP;
+  dbms_output.put_line('Total CardAccs Updated: ' || v_tot_card_cnt);
+  CLOSE trim_accno_cur;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure NORM_N_TRIM_UNI_ACCNO_CRDACUPL
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."NORM_N_TRIM_UNI_ACCNO_CRDACUPL" 
+IS
+  --  v_tot_crdbtch_cnt NUMBER := 0;
+  v_tot_card_cnt NUMBER := 0;
+  v_trim_accno ACCDET.ACCNO%TYPE;
+  v_min_accdet_id NUMBER := 0;
+  v_max_accdet_id NUMBER := 0;
+  v_group_count   NUMBER := 0;
+  v_cardcount     NUMBER := 0;
+  --  v_batchcount      NUMBER := 0;
+  CURSOR trim_accno_cur
+  IS
+    SELECT trim_accno,
+      trim_accno_count,
+      min_id,
+      max_id
+    FROM uni_Accno_trimming_helper;
+  --    WHERE ROWNUM <= 10;
+  CURSOR crdupd_cur (v_trim_accno accdet.accno%TYPE, v_min_accdet_id crdaccupl.accdet_id%TYPE, v_max_accdet_id crdaccupl.accdet_id%TYPE)
+  IS
+    SELECT 
+	  cd.crddet_id crddet_id,
+      ac.accno,
+      ac.id accdet_id,
+      SUBSTR(accno, 6, 13) trim_accno
+    FROM crdaccupl cd,
+      accdet ac
+    WHERE cd.accdet_id = ac.id
+    AND ac.id         != v_max_accdet_id
+    AND ac.inst_id             = 110
+    AND LENGTH(ac.accno)         = 19
+    AND SUBSTR(ac.accno, 6, 13) = v_trim_accno
+    ORDER BY 4, 3, 1;
+    --    AND rownum <= 1000;
+  TYPE type_crdrec_cur
+IS
+  TABLE OF crdupd_cur%rowtype INDEX BY PLS_INTEGER;
+  crdrec type_crdrec_cur;
+BEGIN
+  OPEN trim_accno_cur;
+  LOOP
+    FETCH trim_accno_cur
+    INTO v_trim_accno,
+      v_group_count,
+      v_min_accdet_id,
+      v_max_accdet_id;
+    EXIT
+  WHEN trim_accno_cur%notfound;
+    dbms_output.put_line(' v_trim_accno :: v_min_accdet_id:: v_max_accdet_id:: ' || v_trim_accno || '|' || v_min_accdet_id || '|' || v_max_accdet_id );
+    -- Open cursor for the crdaccupl using accdetid
+    OPEN crdupd_cur(v_trim_accno, v_min_accdet_id, v_max_accdet_id);
+    -- Update the crdaccupl table with new accdet_id
+    LOOP
+      FETCH crdupd_cur BULK COLLECT INTO crdrec LIMIT 10000;
+      EXIT
+    WHEN crdrec.count = 0;
+      dbms_output.put_line(' v_trim_accno :: v_min_accdet_id:: v_max_accdet_id:: count : ' || v_trim_accno || '|' || v_min_accdet_id || '|' || v_max_accdet_id || '|' || crdrec.count );
+      FOR idx IN 1..crdrec.count
+      LOOP
+        UPDATE crdaccupl SET accdet_id = v_max_accdet_id WHERE crddet_id = crdrec(idx).crddet_id;
+        dbms_output.put_line ('Updating crdaccupl crddet_id [' || crdrec(idx).crddet_id || '] - Old ACCDET ID [' || crdrec(idx).accdet_id || '] New ACCDET ID [' || v_max_accdet_id || ']');
+        v_tot_card_cnt := v_tot_card_cnt + 1;
+      END LOOP;
+      dbms_output.put_line('Committed ' || v_tot_card_cnt || ' records in CRDACCUPL ' );
+      COMMIT;
+    END LOOP;
+    CLOSE crdupd_cur;
+    dbms_output.put_line('Total CardAccUpls Updated: ' || v_tot_card_cnt);
+  END LOOP;
+  dbms_output.put_line('Total CardAccUpls Updated: ' || v_tot_card_cnt);
+  CLOSE trim_accno_cur;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure PENDING_CARDLINKING
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."PENDING_CARDLINKING" (v_inst_id NUMBER)
+IS
+	v_batch		  NUMBER(10) := 0;
+	v_count		  NUMBER:= 0;
+	v_total_count NUMBER:= 0;
+	v_batch_count NUMBER:= 0;
+
+	CURSOR batch_cur IS 
+	select cb.batch
+	from
+	CRDBTCH_RNFEXT cb, crdproduct cp
+	where cb.crdproduct_id = cp.id
+	and cb.PROCESSED_FLG = 'Y'
+	and cb.btchtyp = 1
+	and trunc(cb.date_produced) >= '21-DEC-2020'
+	and cp.inst_id = v_inst_id
+	and cardcount = 1
+	order by cardcount;
+BEGIN
+		OPEN batch_cur;
+		v_count := 0;
+		LOOP
+			FETCH batch_cur INTO v_batch;
+			EXIT WHEN batch_cur%NOTFOUND;
+			
+			v_batch_count:= v_batch_count + 1;
+
+			INSERT INTO event_rnfext
+			SELECT 'a', '22630831', 0, ca.crddet_id, ca.accdet_id, 0, 'P', '0'
+			FROM
+				crddet cd,
+				accdet ad,
+				crdacc ca
+			WHERE     ad.id = ca.accdet_id
+				AND   cd.id = ca.crddet_id
+				AND   ad.inst_id = 109
+				AND   cd.statcode = '00'
+				AND   NOT EXISTS (SELECT 1 FROM event_rnfext er WHERE cd.id = er.crddet_id AND ad.id = er.accdet_id AND er.event_type = 'a')
+				and   cd.batch = v_batch;
+				
+				v_count := sql%rowcount;
+				v_total_count := v_total_count + v_count;
+				
+				dbms_output.put_line ('batch ... ' ||v_batch || ' count ... '||v_count);
+		end loop;
+		dbms_output.put_line ('Total count ... '||v_total_count|| ' Batch Count: '||v_batch_count);
+		commit;
+		close batch_cur;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure PERSOCARDISS_NOTIFY
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."PERSOCARDISS_NOTIFY" 
+        (
+                in_crddet_id    CRDEVENT.crddet_id%TYPE
+        )
+as
+                v_alrt_params           REALTIME_PUBLISH_TBL.ALRT_PARAMS%TYPE;
+                v_evt_id                REALTIME_PUBLISH_TBL.EVT_ID%TYPE;
+                v_cust_code             CUSTDET.custcode%TYPE;
+                v_accno                 ACCDET.accno%TYPE;
+--              v_inst_id               CUSTDET.inst_id%TYPE;
+--              v_prflang               CUSTDET.prflang%TYPE;
+--              v_usrdata2              CUSTDET.usrdata2%TYPE;
+--              v_mob_tel               CUSTDET.mob_tel%TYPE;
+--              v_email                 CUSTDET.email%TYPE;
+--              v_pan_display           CRDDET.pan_display%TYPE;
+--              v_crdproduct_id         CRDDET.crdproduct_id%TYPE;
+--              sdate                   DATE;
+begin
+
+        DBMS_OUTPUT.put_line ('crddetid:'||in_crddet_id);
+
+        --Get the customer detail record.
+        select
+                CU.custcode,
+                AC.Accno
+        into
+                v_cust_code,
+                v_accno
+        from
+                CUSTDET CU,
+                CRDDET CD,
+                ACCDET AC
+        where
+                CD.id =in_crddet_id and
+                CU.id = CD.custdet_id and
+                AC.id = CD.accdet_id;
+
+        --SELECT
+        --      DATE_T
+        --INTO
+        --      SDATE
+        --FROM
+        --      MSC
+        --WHERE
+        --      TAG = 'cursysdate' AND
+        --      IDX = 1;
+
+
+        DBMS_OUTPUT.put_line ('select success');
+
+        --Build the event message content
+        --v_evData := 'PAN:' || v_pan_display || ';DATE:' ||  sdate ;
+        v_alrt_params:= NULL;
+
+        --Set the event id
+        v_evt_id := 'F_LG_DC_GR';       --Perso Card issuance
+
+        --Create the messages
+        createnotify(
+                v_cust_code,
+                v_evt_id,
+                v_alrt_params,
+                v_accno
+        );
+
+DBMS_OUTPUT.put_line ('Into carddLinkMsg END');
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure PNB_CUSTOMER_SEARCH_SP
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."PNB_CUSTOMER_SEARCH_SP" (
+	in_inst_code		IN	inst.instcode%TYPE,
+	in_custcode		IN	custdet.ext_custcode%TYPE,
+	in_accno		IN	accdet.accno%TYPE,
+	in_currcode		IN	accdet.currcode%TYPE,
+	in_pan			IN	crddet.pan%TYPE,
+	in_seqno		IN	crddet.seqno%TYPE,
+	in_iss_host_crdref	IN	crddet.iss_host_crdref%TYPE,
+  in_brncode IN BRANCH.brncode%TYPE,
+	out_result 		OUT	SYS_REFCURSOR
+) IS
+	v_cust_cond		varchar2(500) := ' ';
+	v_acc_cond		varchar2(2000) := ' ';
+	v_pan_cond		varchar2(2000) := ' ';
+	v_pan_alias_cond	varchar2(2000) := ' ';
+	v_final_query		varchar2(7000) := ' ';
+
+	-- Select colum list
+	v_cust_detail	varchar2(5000):= 'CU.EXT_CUSTCODE
+					||''^''|| CU.TITLE
+					||''^''|| CU.LASTNAME
+					||''^''|| CU.FIRSTNAME
+					||''^''|| CU.DATE_BIRTH
+					||''^''|| CU.MARRIED
+					||''^''|| CU.SEX
+					||''^''|| CU.PROF_CODE
+					||''^''|| ''1''
+					||''^''|| CU.ADDRL0
+					||''^''|| CU.ADDRL1
+					||''^''|| CU.ADDRL2
+					||''^''|| CU.ADDRL3
+					||''^''|| CU.HOME_CITY
+					||''^''|| CU.HOME_COUNTY
+					||''^''|| CU.POSTCODE
+					||''^''|| CU.HOME_CTRY
+					||''^''|| ''2''
+					||''^''|| CU.WORK_ADDR1
+					||''^''|| CU.WORK_ADDR2
+					||''^''|| CU.WORK_ADDR3
+					||''^''|| CU.WORK_CITY
+					||''^''|| CU.WORK_COUNTY
+					||''^''|| CU.WORK_POSTCODE
+					||''^''|| CU.WORK_CTRY
+					||''^''|| CU.HOME_TEL
+					||''^''|| CU.WORK_TEL
+					||''^''|| CU.MOB_TEL
+					||''^''|| CU.EMAIL
+					||''^''|| CU.USRDATA1
+					||''^''|| CU.USRDATA2
+					||''^''|| CU.USRDATA3';
+
+	v_crd_detail	varchar2(3000) := 'CRD.SEQNO
+					||''^''|| CRD.ISS_HOST_CRDREF
+					||''^''|| CRD.PAN_DISPLAY
+					||''^''|| CRD.ID
+					||''^''|| CRD.EXPDATE
+					||''^''|| CRD.OLD_EXPDATE
+					||''^''|| CRD.ADDITIONALNO
+					||''^''|| CP.CRDPRODUCT
+					||''^''|| CRD.OLD_CRDPRODUCT_ID
+					||''^''|| CRD.STATCODE
+					||''^''|| BR.BRNCODE
+					||''^''|| CRD.TITLE
+					||''^''|| CRD.FIRSTNAME
+					||''^''|| CRD.LASTNAME
+					||''^''|| CRD.EMBOSSNAME
+					||''^''|| CRD.ACCDET_ID
+					||''^''|| CRD.CORP ';
+
+	v_acc_detail	varchar2(1000) := 'AC.ACCNO
+					||''^''|| AC.CURRCODE
+					||''^''|| AC.CLASSID
+					||''^''|| AC.TYPECODE
+					||''^''|| AC.STATCODE
+					||''^''|| AC.AVLBAL
+					||''^''|| AC.BLKAMT
+					||''^''|| AC.CREDIT_LIMIT
+					||''^''|| AC.ID ';
+
+	v_corp_acc_detail	varchar2(1000) := 'PAC.ACCNO
+						||''^''|| PAC.CURRCODE
+						||''^''|| PAC.CLASSID
+						||''^''|| PAC.TYPECODE
+						||''^''|| PAC.STATCODE
+						||''^''|| PAC.AVLBAL
+						||''^''|| PAC.BLKAMT
+						||''^''|| PAC.CREDIT_LIMIT
+						||''^''|| PAC.ID ';
+
+	v_no_corp_detail	varchar2(1000) := ''' ''
+						||''^''|| '' ''
+						||''^''|| '' ''';
+
+	v_corp_detail		varchar2(1000) := 'CU.CUSTCODE
+						||''^''|| CRD.PAN
+						||''^''|| CRD.ISS_HOST_CRDREF  ';
+
+	v_cust_corp_detail 	varchar2(1000) := 'PCU.CUSTCODE
+						||''^''|| PCRD.PAN
+						||''^''|| PCRD.ISS_HOST_CRDREF  ';
+
+BEGIN
+	-- Check the input data's and prepare where cluases
+
+	if(in_custcode != ' ') then
+		v_cust_cond := ' AND (cu.custcode = '||''''|| in_custcode ||''''||
+				' OR cu.ext_custcode = '||''''||in_custcode||''')';
+	end if;
+
+	-- dbms_output.put_line('v_cust_cond ['||v_cust_cond||']');
+
+	if(in_accno != ' ') then
+		v_acc_cond := ' AND ac.accno = '||''''||in_accno ||''''||
+				' AND ac.currcode = '||''''||in_currcode||'''';
+	end if;
+
+	-- dbms_output.put_line('v_acc_cond ['||v_acc_cond||']');
+
+	if(in_pan != ' ') then
+		v_pan_cond := ' AND crd.pan ='||''''||in_pan||''''||
+				' AND seqno = '||in_seqno;
+	end if;
+
+	-- dbms_output.put_line('v_pan_cond ['||v_pan_cond||']');
+
+	if(in_iss_host_crdref != ' ') then
+		v_pan_alias_cond := ' AND crd.iss_host_crdref = '||''''||in_iss_host_crdref||'''';
+	end if;
+
+	-- dbms_output.put_line('v_pan_alias_cond ['||v_pan_alias_cond||']');
+
+	-- Prepare Main Query to fetch the details
+
+if(in_inst_code !=  ' ') then
+			v_final_query :='SELECT
+                                inst.INSTCODE '
+                                ||'|| ''^'' ||'|| v_cust_detail
+                                ||'|| ''^'' ||'|| v_crd_detail
+                                ||'|| ''^'' ||'||
+                                'CASE
+                                WHEN CRD.CORP in (''0'', '' '') THEN '
+                                        || v_acc_detail ||
+                                        '|| ''^'' ||'
+                                        || v_no_corp_detail ||
+                                'WHEN CRD.CORP = ''2'' THEN '
+                                        || v_acc_detail ||
+                                        '|| ''^'' ||'
+                                        || v_corp_detail ||
+                                'WHEN CRD.CORP = ''1'' THEN
+                                        (SELECT '
+                                                || v_corp_acc_detail ||
+                                                '|| ''^'' ||'
+                                                || v_cust_corp_detail ||
+                                        'FROM
+                                                custdet pcu,
+                                                accdet pac,
+                                                crddet pcrd
+                                        WHERE
+                                        pcu.id = pac.custdet_id
+                                        AND pcu.id = pcrd.custdet_id
+                                        AND pac.id = pcrd.accdet_id
+                                        AND pcrd.id = (SELECT ccl.pri_crddet_id
+                                                        FROM corpcrdlnk ccl
+                                                        WHERE ccl.crddet_id = crd.id)
+                                        )
+                                END
+                                || '' ^ ''
+                                || crd.cat_params
+                                || '' ^ ''
+                                || NVL((select LIMITPROFILE FROM CRDDET_X where crddet_id = crd.id), '' '')
+                                || '' ^ ''
+                        FROM
+                                inst inst,
+                                custdet cu,
+                                accdet ac,
+                                crddet crd,
+                                branch br,
+                                crdproduct cp
+                        WHERE
+                                inst.id = cu.inst_id
+                                AND ac.id = crd.accdet_id
+                                AND cu.id = crd.custdet_id
+                                AND crd.branch_id = br.id
+                                AND crd.crdproduct_id = cp.id
+                                AND inst.instcode = '
+                                ||''''||in_inst_code||''''
+                                ||v_cust_cond
+                                ||v_acc_cond
+                                ||v_pan_cond
+                                ||v_pan_alias_cond;
+		else
+			v_final_query :='SELECT
+                                '' '''
+                                ||'|| ''^'' ||'|| v_cust_detail
+                                ||'|| ''^'' ||'|| v_crd_detail
+                                ||'|| ''^'' ||'||
+                                'CASE
+                                WHEN CRD.CORP in (''0'', '' '') THEN '
+                                        || v_acc_detail ||
+                                        '|| ''^'' ||'
+                                        || v_no_corp_detail ||
+                                'WHEN CRD.CORP = ''2'' THEN '
+                                        || v_acc_detail ||
+                                        '|| ''^'' ||'
+                                        || v_corp_detail ||
+                                'WHEN CRD.CORP = ''1'' THEN
+                                        (SELECT '
+                                                || v_corp_acc_detail ||
+                                                '|| ''^'' ||'
+                                                || v_cust_corp_detail ||
+                                        'FROM
+                                                custdet pcu,
+                                                accdet pac,
+                                                crddet pcrd
+                                        WHERE
+                                        pcu.id = pac.custdet_id
+                                        AND pcu.id = pcrd.custdet_id
+                                        AND pac.id = pcrd.accdet_id
+                                        AND pcrd.id = (SELECT ccl.pri_crddet_id
+                                                        FROM corpcrdlnk ccl
+                                                        WHERE ccl.crddet_id = crd.id)
+                                        )
+                                END
+                                || '' ^ ''
+                                || crd.cat_params
+                                || '' ^ ''
+                                || NVL((select LIMITPROFILE FROM CRDDET_X where crddet_id = crd.id), '' '')
+                                || '' ^ ''
+                        FROM
+                                custdet cu,
+                                accdet ac,
+                                crddet crd,
+                                branch br,
+                                crdproduct cp
+                        WHERE
+								ac.id = crd.accdet_id
+                                AND cu.id = crd.custdet_id
+                                AND crd.branch_id = br.id
+                                AND crd.crdproduct_id = cp.id '
+                                ||v_cust_cond
+                                ||v_acc_cond
+                                ||v_pan_cond
+                                ||v_pan_alias_cond;
+		end if;
+
+	-- dbms_output.put_line('Query ['||v_final_query||']');
+
+	-- Open the Referance cursor
+
+        if(in_brncode != ' ') then
+                v_final_query := v_final_query || ' AND br.brncode = '|| '''' || in_brncode || '''';
+        end if;
+
+	OPEN out_result FOR v_final_query;
+	end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure PNB_CUSTOMER_SEARCH_SP_TEST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."PNB_CUSTOMER_SEARCH_SP_TEST" (
+	in_inst_code		IN	inst.instcode%TYPE,
+	in_custcode		IN	custdet.ext_custcode%TYPE,
+	in_accno		IN	accdet.accno%TYPE,
+	in_currcode		IN	accdet.currcode%TYPE,
+	in_pan			IN	crddet.pan%TYPE,
+	in_seqno		IN	crddet.seqno%TYPE,
+	in_iss_host_crdref	IN	crddet.iss_host_crdref%TYPE,
+  in_brncode IN branch.brncode%TYPE--,
+	--out_result 		OUT	SYS_REFCURSOR
+) IS
+	v_cust_cond		varchar2(500) := ' ';
+	v_acc_cond		varchar2(2000) := ' ';
+	v_pan_cond		varchar2(2000) := ' ';
+	v_pan_alias_cond	varchar2(2000) := ' ';
+	v_final_query		varchar2(7000) := ' ';
+
+	-- Select colum list
+	v_cust_detail	varchar2(5000):= 'CU.EXT_CUSTCODE
+					||''^''|| CU.TITLE
+					||''^''|| CU.LASTNAME
+					||''^''|| CU.FIRSTNAME
+					||''^''|| CU.DATE_BIRTH
+					||''^''|| CU.MARRIED
+					||''^''|| CU.SEX
+					||''^''|| CU.PROF_CODE
+					||''^''|| ''1''
+					||''^''|| CU.ADDRL0
+					||''^''|| CU.ADDRL1
+					||''^''|| CU.ADDRL2
+					||''^''|| CU.ADDRL3
+					||''^''|| CU.HOME_CITY
+					||''^''|| CU.HOME_COUNTY
+					||''^''|| CU.POSTCODE
+					||''^''|| CU.HOME_CTRY
+					||''^''|| ''2''
+					||''^''|| CU.WORK_ADDR1
+					||''^''|| CU.WORK_ADDR2
+					||''^''|| CU.WORK_ADDR3
+					||''^''|| CU.WORK_CITY
+					||''^''|| CU.WORK_COUNTY
+					||''^''|| CU.WORK_POSTCODE
+					||''^''|| CU.WORK_CTRY
+					||''^''|| CU.HOME_TEL
+					||''^''|| CU.WORK_TEL
+					||''^''|| CU.MOB_TEL
+					||''^''|| CU.EMAIL
+					||''^''|| CU.USRDATA1
+					||''^''|| CU.USRDATA2
+					||''^''|| CU.USRDATA3';
+
+	v_crd_detail	varchar2(3000) := 'CRD.SEQNO
+					||''^''|| CRD.ISS_HOST_CRDREF
+					||''^''|| CRD.PAN_DISPLAY
+					||''^''|| CRD.ID
+					||''^''|| CRD.EXPDATE
+					||''^''|| CRD.OLD_EXPDATE
+					||''^''|| CRD.ADDITIONALNO
+					||''^''|| CP.CRDPRODUCT
+					||''^''|| CRD.OLD_CRDPRODUCT_ID
+					||''^''|| CRD.STATCODE
+					||''^''|| BR.BRNCODE
+					||''^''|| CRD.TITLE
+					||''^''|| CRD.FIRSTNAME
+					||''^''|| CRD.LASTNAME
+					||''^''|| CRD.EMBOSSNAME
+					||''^''|| CRD.ACCDET_ID
+					||''^''|| CRD.CORP ';
+
+	v_acc_detail	varchar2(1000) := 'AC.ACCNO
+					||''^''|| AC.CURRCODE
+					||''^''|| AC.CLASSID
+					||''^''|| AC.TYPECODE
+					||''^''|| AC.STATCODE
+					||''^''|| AC.AVLBAL
+					||''^''|| AC.BLKAMT
+					||''^''|| AC.CREDIT_LIMIT
+					||''^''|| AC.ID ';
+
+	v_corp_acc_detail	varchar2(1000) := 'PAC.ACCNO
+						||''^''|| PAC.CURRCODE
+						||''^''|| PAC.CLASSID
+						||''^''|| PAC.TYPECODE
+						||''^''|| PAC.STATCODE
+						||''^''|| PAC.AVLBAL
+						||''^''|| PAC.BLKAMT
+						||''^''|| PAC.CREDIT_LIMIT
+						||''^''|| PAC.ID ';
+
+	v_no_corp_detail	varchar2(1000) := ''' ''
+						||''^''|| '' ''
+						||''^''|| '' ''';
+
+	v_corp_detail		varchar2(1000) := 'CU.CUSTCODE
+						||''^''|| CRD.PAN
+						||''^''|| CRD.ISS_HOST_CRDREF  ';
+
+	v_cust_corp_detail 	varchar2(1000) := 'PCU.CUSTCODE
+						||''^''|| PCRD.PAN
+						||''^''|| PCRD.ISS_HOST_CRDREF  ';
+
+BEGIN
+	-- Check the input data's and prepare where cluases
+
+	if(in_custcode != ' ') then
+		v_cust_cond := ' AND (cu.custcode = '||''''|| in_custcode ||''''||
+				' OR cu.ext_custcode = '||''''||in_custcode||''')';
+	end if;
+
+	-- dbms_output.put_line('v_cust_cond ['||v_cust_cond||']');
+
+	if(in_accno != ' ') then
+		v_acc_cond := ' AND ac.accno = '||''''||in_accno ||''''||
+				' AND ac.currcode = '||''''||in_currcode||'''';
+	end if;
+
+	-- dbms_output.put_line('v_acc_cond ['||v_acc_cond||']');
+
+	if(in_pan != ' ') then
+		v_pan_cond := ' AND crd.pan ='||''''||in_pan||''''||
+				' AND seqno = '||in_seqno;
+	end if;
+
+	-- dbms_output.put_line('v_pan_cond ['||v_pan_cond||']');
+
+	if(in_iss_host_crdref != ' ') then
+		v_pan_alias_cond := ' AND crd.iss_host_crdref = '||''''||in_iss_host_crdref||'''';
+	end if;
+
+	-- dbms_output.put_line('v_pan_alias_cond ['||v_pan_alias_cond||']');
+
+	-- Prepare Main Query to fetch the details
+
+if(in_inst_code !=  ' ') then
+			v_final_query :='SELECT
+                                inst.INSTCODE '
+                                ||'|| ''^'' ||'|| v_cust_detail
+                                ||'|| ''^'' ||'|| v_crd_detail
+                                ||'|| ''^'' ||'||
+                                'CASE
+                                WHEN CRD.CORP in (''0'', '' '') THEN '
+                                        || v_acc_detail ||
+                                        '|| ''^'' ||'
+                                        || v_no_corp_detail ||
+                                'WHEN CRD.CORP = ''2'' THEN '
+                                        || v_acc_detail ||
+                                        '|| ''^'' ||'
+                                        || v_corp_detail ||
+                                'WHEN CRD.CORP = ''1'' THEN
+                                        (SELECT '
+                                                || v_corp_acc_detail ||
+                                                '|| ''^'' ||'
+                                                || v_cust_corp_detail ||
+                                        'FROM
+                                                custdet pcu,
+                                                accdet pac,
+                                                crddet pcrd
+                                        WHERE
+                                        pcu.id = pac.custdet_id
+                                        AND pcu.id = pcrd.custdet_id
+                                        AND pac.id = pcrd.accdet_id
+                                        AND pcrd.id = (SELECT ccl.pri_crddet_id
+                                                        FROM corpcrdlnk ccl
+                                                        WHERE ccl.crddet_id = crd.id)
+                                        )
+                                END
+                                || '' ^ ''
+                                || crd.cat_params
+                                || '' ^ ''
+                                || NVL((select LIMITPROFILE FROM CRDDET_X where crddet_id = crd.id), '' '')
+                                || '' ^ ''
+                        FROM
+                                inst inst,
+                                custdet cu,
+                                accdet ac,
+                                crddet crd,
+                                branch br,
+                                crdproduct cp
+                        WHERE
+                                inst.id = cu.inst_id
+                                AND ac.id = crd.accdet_id
+                                AND cu.id = crd.custdet_id
+                                AND crd.branch_id = br.id
+                                AND crd.crdproduct_id = cp.id
+                                AND inst.instcode = '
+                                ||''''||in_inst_code||''''
+                                ||v_cust_cond
+                                ||v_acc_cond
+                                ||v_pan_cond
+                                ||v_pan_alias_cond;
+		else
+			v_final_query :='SELECT
+                                '' '''
+                                ||'|| ''^'' ||'|| v_cust_detail
+                                ||'|| ''^'' ||'|| v_crd_detail
+                                ||'|| ''^'' ||'||
+                                'CASE
+                                WHEN CRD.CORP in (''0'', '' '') THEN '
+                                        || v_acc_detail ||
+                                        '|| ''^'' ||'
+                                        || v_no_corp_detail ||
+                                'WHEN CRD.CORP = ''2'' THEN '
+                                        || v_acc_detail ||
+                                        '|| ''^'' ||'
+                                        || v_corp_detail ||
+                                'WHEN CRD.CORP = ''1'' THEN
+                                        (SELECT '
+                                                || v_corp_acc_detail ||
+                                                '|| ''^'' ||'
+                                                || v_cust_corp_detail ||
+                                        'FROM
+                                                custdet pcu,
+                                                accdet pac,
+                                                crddet pcrd
+                                        WHERE
+                                        pcu.id = pac.custdet_id
+                                        AND pcu.id = pcrd.custdet_id
+                                        AND pac.id = pcrd.accdet_id
+                                        AND pcrd.id = (SELECT ccl.pri_crddet_id
+                                                        FROM corpcrdlnk ccl
+                                                        WHERE ccl.crddet_id = crd.id)
+                                        )
+                                END
+                                || '' ^ ''
+                                || crd.cat_params
+                                || '' ^ ''
+                                || NVL((select LIMITPROFILE FROM CRDDET_X where crddet_id = crd.id), '' '')
+                                || '' ^ ''
+                        FROM
+                                custdet cu,
+                                accdet ac,
+                                crddet crd,
+                                branch br,
+                                crdproduct cp
+                        WHERE
+								ac.id = crd.accdet_id
+                                AND cu.id = crd.custdet_id
+                                AND crd.branch_id = br.id
+                                AND crd.crdproduct_id = cp.id '
+                                ||v_cust_cond
+                                ||v_acc_cond
+                                ||v_pan_cond
+                                ||v_pan_alias_cond;
+		end if;
+
+	  
+   	if(in_brncode != ' ') then
+		    v_final_query := v_final_query || ' AND br.brncode = ' || '''' || in_brncode ||''''; 
+  	end if;
+    
+    dbms_output.put_line('Query ['||v_final_query||']');
+
+	-- Open the Referance cursor
+
+	--OPEN out_result FOR v_final_query;
+	end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure PNB_CUSTOMER_SEARCH_SP_TESTBKP
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."PNB_CUSTOMER_SEARCH_SP_TESTBKP" (
+        in_inst_code            IN      inst.instcode%TYPE,
+        in_custcode             IN      custdet.ext_custcode%TYPE,
+        in_accno                IN      accdet.accno%TYPE,
+        in_currcode             IN      accdet.currcode%TYPE,
+        in_pan                  IN      crddet.pan%TYPE,
+        in_seqno                IN      crddet.seqno%TYPE,
+        in_iss_host_crdref      IN      crddet.iss_host_crdref%TYPE,
+        in_brn_code             IN      branch.brncode%TYPE
+) IS
+        v_cust_cond             varchar2(500) := ' ';
+        v_acc_cond              varchar2(2000) := ' ';
+        v_pan_cond              varchar2(2000) := ' ';
+        v_pan_alias_cond        varchar2(2000) := ' ';
+        v_final_query           varchar2(7000) := ' ';
+
+        -- Select colum list
+        v_cust_detail   varchar2(5000):= 'CU.EXT_CUSTCODE
+                                        ||''^''|| CU.TITLE
+                                        ||''^''|| CU.LASTNAME
+                                        ||''^''|| CU.FIRSTNAME
+                                        ||''^''|| CU.DATE_BIRTH
+                                        ||''^''|| CU.MARRIED
+                                        ||''^''|| CU.SEX
+                                        ||''^''|| CU.PROF_CODE
+                                        ||''^''|| ''1''
+                                        ||''^''|| CU.ADDRL0
+                                        ||''^''|| CU.ADDRL1
+                                        ||''^''|| CU.ADDRL2
+                                        ||''^''|| CU.ADDRL3
+                                        ||''^''|| CU.HOME_CITY
+                                        ||''^''|| CU.HOME_COUNTY
+                                        ||''^''|| CU.POSTCODE
+                                        ||''^''|| CU.HOME_CTRY
+                                        ||''^''|| ''2''
+                                        ||''^''|| CU.WORK_ADDR1
+                                        ||''^''|| CU.WORK_ADDR2
+                                        ||''^''|| CU.WORK_ADDR3
+                                        ||''^''|| CU.WORK_CITY
+                                        ||''^''|| CU.WORK_COUNTY
+                                        ||''^''|| CU.WORK_POSTCODE
+                                        ||''^''|| CU.WORK_CTRY
+                                        ||''^''|| CU.HOME_TEL
+                                        ||''^''|| CU.WORK_TEL
+                                        ||''^''|| CU.MOB_TEL
+                                        ||''^''|| CU.EMAIL
+                                        ||''^''|| CU.USRDATA1
+                                        ||''^''|| CU.USRDATA2
+                                        ||''^''|| CU.USRDATA3';
+
+        v_crd_detail    varchar2(3000) := 'CRD.SEQNO
+                                        ||''^''|| CRD.ISS_HOST_CRDREF
+                                        ||''^''|| CRD.PAN_DISPLAY
+                                        ||''^''|| CRD.ID
+                                        ||''^''|| CRD.EXPDATE
+                                        ||''^''|| CRD.OLD_EXPDATE
+                                        ||''^''|| CRD.ADDITIONALNO
+                                        ||''^''|| CP.CRDPRODUCT
+                                        ||''^''|| CRD.OLD_CRDPRODUCT_ID
+                                        ||''^''|| CRD.STATCODE
+                                        ||''^''|| BR.BRNCODE
+                                        ||''^''|| CRD.TITLE
+                                        ||''^''|| CRD.FIRSTNAME
+                                        ||''^''|| CRD.LASTNAME
+                                        ||''^''|| CRD.EMBOSSNAME
+                                        ||''^''|| CRD.ACCDET_ID
+                                        ||''^''|| CRD.CORP 
+                                        ||''^''|| CRD.CAT_PARMS ';
+
+        v_acc_detail    varchar2(1000) := 'AC.ACCNO
+                                        ||''^''|| AC.CURRCODE
+                                        ||''^''|| AC.CLASSID
+                                        ||''^''|| AC.TYPECODE
+                                        ||''^''|| AC.STATCODE
+                                        ||''^''|| AC.AVLBAL
+                                        ||''^''|| AC.BLKAMT
+                                        ||''^''|| AC.CREDIT_LIMIT
+                                        ||''^''|| AC.ID ';
+
+        v_corp_acc_detail       varchar2(1000) := 'PAC.ACCNO
+                                                ||''^''|| PAC.CURRCODE
+                                                ||''^''|| PAC.CLASSID
+                                                ||''^''|| PAC.TYPECODE
+                                                ||''^''|| PAC.STATCODE
+                                                ||''^''|| PAC.AVLBAL
+                                                ||''^''|| PAC.BLKAMT
+                                                ||''^''|| PAC.CREDIT_LIMIT
+                                                ||''^''|| PAC.ID ';
+
+        v_no_corp_detail        varchar2(1000) := ''' ''
+                                                ||''^''|| '' ''
+                                                ||''^''|| '' ''';
+
+        v_corp_detail           varchar2(1000) := 'CU.CUSTCODE
+                                                ||''^''|| CRD.PAN
+                                                ||''^''|| CRD.ISS_HOST_CRDREF  ';
+
+        v_cust_corp_detail      varchar2(1000) := 'PCU.CUSTCODE
+                                                ||''^''|| PCRD.PAN
+                                                ||''^''|| PCRD.ISS_HOST_CRDREF  ';
+
+BEGIN
+        -- Check the input data's and prepare where cluases
+        if(in_custcode != ' ') then
+                v_cust_cond := ' AND (cu.custcode = '||''''|| in_custcode ||''''||
+                                ' OR cu.ext_custcode = '||''''||in_custcode||''')';
+        end if;
+
+        -- dbms_output.put_line('v_cust_cond ['||v_cust_cond||']');
+
+        if(in_accno != ' ') then
+                v_acc_cond := ' AND ac.accno = '||''''||in_accno ||''''||
+                                ' AND ac.currcode = '||''''||in_currcode||'''';
+        end if;
+
+        -- dbms_output.put_line('v_acc_cond ['||v_acc_cond||']');
+
+        if(in_pan != ' ') then
+                v_pan_cond := ' AND crd.pan ='||''''||in_pan||''''||
+                                ' AND seqno = '||in_seqno;
+        end if;
+
+        -- dbms_output.put_line('v_pan_cond ['||v_pan_cond||']');
+
+        if(in_iss_host_crdref != ' ') then
+                v_pan_alias_cond := ' AND crd.iss_host_crdref = '||''''||in_iss_host_crdref||'''';
+        end if;
+
+        -- dbms_output.put_line('v_pan_alias_cond ['||v_pan_alias_cond||']');
+
+        -- Prepare Main Query to fetch the details
+
+        v_final_query :='SELECT
+                                inst.INSTCODE '
+                                ||'|| ''^'' ||'|| v_cust_detail
+                                ||'|| ''^'' ||'|| v_crd_detail
+                                ||'|| ''^'' ||'||
+                                'CASE
+                                WHEN CRD.CORP = ''0'' THEN '
+                                        || v_acc_detail ||
+                                        '|| ''^'' ||'
+                                        || v_no_corp_detail ||
+                                'WHEN CRD.CORP = ''2'' THEN '
+                                        || v_acc_detail ||
+                                        '|| ''^'' ||'
+                                        || v_corp_detail ||
+                                'WHEN CRD.CORP = ''1'' THEN
+                                        (SELECT '
+                                                || v_corp_acc_detail ||
+                                                '|| ''^'' ||'
+                                                || v_cust_corp_detail ||
+                                        'FROM
+                                                custdet pcu,
+                                                accdet pac,
+                                                crddet pcrd
+                                        WHERE
+                                        pcu.id = pac.custdet_id
+                                        AND pcu.id = pcrd.custdet_id
+                                        AND pac.id = pcrd.accdet_id
+                                        AND pcrd.id = (SELECT ccl.pri_crddet_id
+                                                        FROM corpcrdlnk ccl
+                                                        WHERE ccl.crddet_id = crd.id)
+                                        )
+                                END
+                        FROM
+                                inst inst,
+                                custdet cu,
+                                accdet ac,
+                                crddet crd,
+                                branch br,
+                                crdproduct cp
+                        WHERE
+                                inst.id = cu.inst_id
+                                AND cu.id = ac.custdet_id
+                                AND ac.id = crd.accdet_id
+                                AND cu.id = crd.custdet_id
+                                AND crd.branch_id = br.id
+                                AND crd.crdproduct_id = cp.id
+                                AND inst.instcode = '
+                                ||''''||in_inst_code||''''
+                                ||v_cust_cond
+                                ||v_acc_cond
+                                ||v_pan_cond
+                                ||v_pan_alias_cond;
+
+        dbms_output.put_line('Query ['||v_final_query||']');
+        
+        if(in_brn_code != ' ') then
+                v_final_query := v_final_query || ' AND br.brncode = '|| '''' || in_brn_code || '''';
+        end if;
+        
+        dbms_output.put_line('Query ['||v_final_query||']');
+        
+        -- Open the Referance cursor
+
+        --OPEN out_result FOR v_final_query;
+        end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure PNB_CUSTOMER_SEARCH_SP_WORKING
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."PNB_CUSTOMER_SEARCH_SP_WORKING" (
+    in_inst_code       IN inst.instcode%TYPE,
+    in_custcode        IN custdet.ext_custcode%TYPE,
+    in_accno           IN accdet.accno%TYPE,
+    in_currcode        IN accdet.currcode%TYPE,
+    in_pan             IN crddet.pan%TYPE,
+    in_seqno           IN crddet.seqno%TYPE,
+    in_iss_host_crdref IN crddet.iss_host_crdref%TYPE,
+    out_result OUT SYS_REFCURSOR 
+)
+IS
+  v_cust_cond      VARCHAR2(500)  := ' ';
+  v_acc_cond       VARCHAR2(2000) := ' ';
+  v_pan_cond       VARCHAR2(2000) := ' ';
+  v_pan_alias_cond VARCHAR2(2000) := ' ';
+  v_final_query    VARCHAR2(7000) := ' ';
+  -- Select colum list
+  v_cust_detail VARCHAR2(5000):=
+  'CU.EXT_CUSTCODE
+||''^''|| CU.TITLE
+||''^''|| CU.LASTNAME
+||''^''|| CU.FIRSTNAME
+||''^''|| CU.DATE_BIRTH
+||''^''|| CU.MARRIED
+||''^''|| CU.SEX
+||''^''|| CU.PROF_CODE
+||''^''|| ''1''
+||''^''|| CU.ADDRL0
+||''^''|| CU.ADDRL1
+||''^''|| CU.ADDRL2
+||''^''|| CU.ADDRL3
+||''^''|| CU.HOME_CITY
+||''^''|| CU.HOME_COUNTY
+||''^''|| CU.POSTCODE
+||''^''|| CU.HOME_CTRY
+||''^''|| ''2''
+||''^''|| CU.WORK_ADDR1
+||''^''|| CU.WORK_ADDR2
+||''^''|| CU.WORK_ADDR3
+||''^''|| CU.WORK_CITY
+||''^''|| CU.WORK_COUNTY
+||''^''|| CU.WORK_POSTCODE
+||''^''|| CU.WORK_CTRY
+||''^''|| CU.HOME_TEL
+||''^''|| CU.WORK_TEL
+||''^''|| CU.MOB_TEL
+||''^''|| CU.EMAIL
+||''^''|| CU.USRDATA1
+||''^''|| CU.USRDATA2
+||''^''|| CU.USRDATA3';
+
+  v_crd_detail VARCHAR2(3000) :=
+  'CRD.SEQNO
+||''^''|| CRD.ISS_HOST_CRDREF
+||''^''|| CRD.PAN_DISPLAY
+||''^''|| CRD.ID
+||''^''|| CRD.EXPDATE
+||''^''|| CRD.OLD_EXPDATE
+||''^''|| CRD.ADDITIONALNO
+||''^''|| CP.CRDPRODUCT
+||''^''|| CRD.OLD_CRDPRODUCT_ID
+||''^''|| CRD.STATCODE
+||''^''|| BR.BRNCODE
+||''^''|| CRD.TITLE
+||''^''|| CRD.FIRSTNAME
+||''^''|| CRD.LASTNAME
+||''^''|| CRD.EMBOSSNAME
+||''^''|| CRD.ACCDET_ID
+||''^''|| CRD.CORP ';
+
+  v_acc_detail       VARCHAR2(1000) := 'AC.ACCNO
+||''^''|| AC.CURRCODE
+||''^''|| AC.CLASSID
+||''^''|| AC.TYPECODE
+||''^''|| AC.STATCODE
+||''^''|| AC.AVLBAL
+||''^''|| AC.BLKAMT
+||''^''|| AC.CREDIT_LIMIT
+||''^''|| AC.ID ';
+  v_corp_acc_detail  VARCHAR2(1000) := 'PAC.ACCNO
+||''^''|| PAC.CURRCODE
+||''^''|| PAC.CLASSID
+||''^''|| PAC.TYPECODE
+||''^''|| PAC.STATCODE
+||''^''|| PAC.AVLBAL
+||''^''|| PAC.BLKAMT
+||''^''|| PAC.CREDIT_LIMIT
+||''^''|| PAC.ID ';
+  v_no_corp_detail   VARCHAR2(1000) := ''' ''
+||''^''|| '' ''
+||''^''|| '' ''';
+  v_corp_detail      VARCHAR2(1000) := 'CU.CUSTCODE
+||''^''|| CRD.PAN
+||''^''|| CRD.ISS_HOST_CRDREF  ';
+  v_cust_corp_detail VARCHAR2(1000) := 'PCU.CUSTCODE
+||''^''|| PCRD.PAN
+||''^''|| PCRD.ISS_HOST_CRDREF  ';
+BEGIN
+  -- Check the input data's and prepare where cluases
+  IF(in_custcode != ' ') THEN
+    v_cust_cond  := ' AND (cu.custcode = '||''''|| in_custcode ||''''|| ' OR cu.ext_custcode = '||''''||in_custcode||''')';
+  END IF;
+  -- dbms_output.put_line('v_cust_cond ['||v_cust_cond||']');
+  IF(in_accno  != ' ') THEN
+    v_acc_cond := ' AND ac.accno = '||''''||in_accno ||''''|| ' AND ac.currcode = '||''''||in_currcode||'''';
+  END IF;
+  -- dbms_output.put_line('v_acc_cond ['||v_acc_cond||']');
+  IF(in_pan    != ' ') THEN
+    v_pan_cond := ' AND crd.pan ='||''''||in_pan||''''|| ' AND seqno = '||in_seqno;
+  END IF;
+  -- dbms_output.put_line('v_pan_cond ['||v_pan_cond||']');
+  IF(in_iss_host_crdref != ' ') THEN
+    v_pan_alias_cond    := ' AND crd.iss_host_crdref = '||''''||in_iss_host_crdref||'''';
+  END IF;
+  -- dbms_output.put_line('v_pan_alias_cond ['||v_pan_alias_cond||']');
+  -- Prepare Main Query to fetch the details
+  v_final_query :='SELECT inst.INSTCODE ' ||'|| ''^'' ||'|| v_cust_detail ||'|| ''^'' ||'|| v_crd_detail ||'|| ''^'' ||'|| 'CASE
+WHEN CRD.CORP in (''0'', '' '') THEN ' || v_acc_detail || '|| ''^'' ||' || v_no_corp_detail ||
+  'WHEN CRD.CORP = ''2'' THEN ' || v_acc_detail || '|| ''^'' ||' || v_corp_detail || 'WHEN CRD.CORP = ''1'' THEN
+(SELECT ' || v_corp_acc_detail || '|| ''^'' ||' || v_cust_corp_detail ||
+  'FROM
+custdet pcu,
+accdet pac,
+crddet pcrd
+WHERE
+pcu.id = pac.custdet_id
+AND pcu.id = pcrd.custdet_id
+AND pac.id = pcrd.accdet_id
+AND pcrd.id = (SELECT ccl.pri_crddet_id
+FROM corpcrdlnk ccl
+WHERE ccl.crddet_id = crd.id)
+)
+END
+|| '' ^ ''
+|| crd.cat_params
+|| '' ^ ''
+|| (select LIMITPROFILE FROM CRDDET_X where crddet_id = crd.id)
+|| '' ^ ''
+FROM
+inst inst,
+custdet cu,
+accdet ac,
+crddet crd,
+branch br,
+crdproduct cp
+WHERE
+inst.id = cu.inst_id
+AND cu.id = ac.custdet_id
+AND ac.id = crd.accdet_id
+AND cu.id = crd.custdet_id
+AND crd.branch_id = br.id
+AND crd.crdproduct_id = cp.id
+AND inst.instcode = ' ||''''||in_inst_code||'''' ||v_cust_cond ||v_acc_cond ||v_pan_cond ||v_pan_alias_cond;
+dbms_output.put_line('Query ['||v_final_query||']');
+-- Open the Referance cursor
+OPEN out_result FOR v_final_query;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure PROCEDURE
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."PROCEDURE" delete_acc_type_50
+IS
+    CURSOR main_cursor IS
+    SELECT
+        id AS accdet_id
+    FROM
+        accdet
+    WHERE
+        acctype = '50';
+
+    TYPE acctype_cur_tab IS
+        TABLE OF main_cursor%rowtype INDEX BY PLS_INTEGER;
+    acctype_tab_row
+    acctype_cur_tab;
+
+BEGIN
+    OPEN main_cursor;
+    LOOP
+        FETCH main_cursor BULK COLLECT INTO acctype_tab_row LIMIT 5000;
+        EXIT WHEN acctype_tab_row.count = 0;
+        FORALL i IN 1..acctype_tab_row.count
+            DELETE crdacc
+            WHERE
+                accdet_id = acctype_tab_row(i).accdet_id;
+
+        COMMIT;
+        FORALL i IN 1..acctype_tab_row.count
+            DELETE accbalslog
+            WHERE
+                accdet_id = acctype_tab_row(i).accdet_id;
+
+        COMMIT;
+        FORALL i IN 1..acctype_tab_row.count
+            DELETE crddet
+            WHERE
+                accdet_id = acctype_tab_row(i).accdet_id;
+
+        COMMIT;
+        FORALL i IN 1..acctype_tab_row.count
+            DELETE custdet
+            WHERE
+                accdet_id = acctype_tab_row(i).accdet_id;
+
+        COMMIT;
+    END LOOP;
+
+    CLOSE main_cursor;
+END delete_acc_type_50;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure PR_CUSTDET_UPDATE_FOR_DCARD
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."PR_CUSTDET_UPDATE_FOR_DCARD" (
+dcard_date IN dcard_all.logging_date%type)
+IS
+/* SELECT ONLY THE PERSO CREATE RECORDS FOR THE SPECIFIC DATE.*/
+CURSOR dcard_cursor IS
+SELECT addr1, addr2, state, city, pin_code, phone_num, cust_id
+FROM dcard_all
+WHERE logging_date = dcard_date;
+--   AND card_status = 'V'
+--  AND TRIM(cardno_1) IS NULL;
+
+TYPE dcard_cur_tab IS TABLE OF dcard_cursor%ROWTYPE INDEX BY PLS_INTEGER;
+dcard_cur_tab_row dcard_cur_tab;
+
+BEGIN
+OPEN dcard_cursor;
+LOOP
+FETCH dcard_cursor BULK COLLECT into dcard_cur_tab_row LIMIT 5000;
+EXIT WHEN dcard_cur_tab_row.count=0;
+
+FORALL i IN 1..dcard_cur_tab_row.count
+UPDATE custdet
+SET     addrl1    = dcard_cur_tab_row(i).addr1,
+addrl2    = dcard_cur_tab_row(i).addr2,
+addrl3    = dcard_cur_tab_row(i).city,
+home_city = dcard_cur_tab_row(i).state,
+home_tel  = dcard_cur_tab_row(i).phone_num,
+postcode  = dcard_cur_tab_row(i).pin_code
+WHERE   custcode  = dcard_cur_tab_row(i).cust_id
+AND     inst_id   = 107;
+COMMIT;
+END LOOP;
+CLOSE dcard_cursor;
+END pr_custdet_update_for_dcard;
+create or replace TRIGGER pwdhist_change before UPDATE ON pwdhist
+REFERENCING OLD old_atmadlog NEW new_atmadlog
+FOR EACH ROW
+begin
+	:new_atmadlog.verno_ctx := :old_atmadlog.verno_ctx + 1;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure RULE_CONTEXT_SET_PENDING_EVENT
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."RULE_CONTEXT_SET_PENDING_EVENT" 
+		(use_case number, use_id number, i_id rule_rule.id%type,
+		 i_activity_id rule_context.activity_id%type)
+IS
+BEGIN
+
+	-- upd/del/isrt in RULE_EVALDIMLINK and RULE_DIMLVLLINK
+	if ( use_case = 1 ) then
+		update rule_context set event_pending = 1,
+					activity_id = i_activity_id
+		where id in
+			( select context_id from
+			  	rule_dimvalue, rule_dimension
+				where rule_dimvalue.dimension_id = rule_dimension.id
+				and rule_dimvalue.id = i_id );
+	-- insrt/del in RULE_DIMVALUE
+	elsif ( use_case = 2) then
+		update rule_context set event_pending = 1,
+					activity_id = i_activity_id
+		where id in
+			( select context_id from
+				rule_dimension where id = i_id );
+	-- changes in RULE_ATOM, or RULE_RULE, RULE_DIMENSION
+	elsif ( use_case = 3 ) then
+		-- Only for changes in RULE_ATOM where we don't really
+		-- know where this atom is used
+		if ( use_id  = 0 ) then
+			update rule_context set event_pending = 1,
+					activity_id = i_activity_id;
+		else
+			update rule_context set event_pending = 1,
+					activity_id = i_activity_id
+			where id = i_id;
+		end if;
+	-- upd/del/insrt in RULE_EVALRULELINK
+	elsif ( use_case = 4 ) then
+		update rule_context set event_pending = 1,
+					activity_id = i_activity_id
+		where id in
+			( select context_id from rule_rule
+			  where rule_rule.id = i_id );
+	-- upd in RULE_EVALSET
+	elsif ( use_case = 5 ) then
+		update rule_context set event_pending = 1,
+					activity_id = i_activity_id
+		where id in
+			( select rule_rule.context_id from
+			  rule_evalrulelink, rule_rule
+			  where rule_evalrulelink.rule_id = rule_rule.id
+			  and rule_evalrulelink.evalset_id = i_id );
+	end if;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure SET_CRDDETMISC_EXPORT
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."SET_CRDDETMISC_EXPORT" (crddet_id_IN IN number) is
+	in_crddet_id      NUMBER(10,0) := crddet_id_IN;
+begin
+	if in_crddet_id is null then
+in_crddet_id := 0;
+end if;
+	update	crddetmisc
+	set	export = 1
+	where	crddetmisc.crddet_id = in_crddet_id;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure SP_TABLE_BACKUP
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."SP_TABLE_BACKUP" (
+    from_table     IN VARCHAR2,
+    to_table       IN VARCHAR2,
+    purge_column   IN VARCHAR2,
+    purge_day      IN NUMBER
+) IS
+
+    v_select_query   VARCHAR2(1024) := ' ';
+    v_delet_query    VARCHAR2(1024) := ' ';
+    v_log_message    VARCHAR2(1024) := ' ';
+BEGIN
+
+	INSERT INTO table_purge_log (
+            table_purge_from,
+            table_purge_to,
+            log_msg,
+            create_dt
+        ) VALUES (
+            from_table,
+            to_table,
+            'Execution Started',
+            SYSDATE
+        );
+	-- Check the values
+    IF ( ( from_table IS NULL OR from_table = ' ' ) 
+		OR ( to_table IS NULL OR to_table = ' ' ) 
+		OR purge_day <= 0 ) 
+	THEN
+        v_log_message := 'From table ['
+        || from_table
+        || '] or '
+        || 'To table ['
+        || to_table
+        || '] or '
+        || 'Purge day ['
+        || purge_day
+        || '] is wrong';
+
+        INSERT INTO table_purge_log (
+            table_purge_from,
+            table_purge_to,
+            log_msg,
+            create_dt
+        ) VALUES (
+            from_table,
+            to_table,
+            v_log_message,
+            SYSDATE
+        );
+
+    ELSE
+        v_log_message := 'Purging the '
+        || from_table
+        || ' to '
+        || to_table
+        || ' till '
+        || purge_day
+        || ' day''s';
+
+        INSERT INTO table_purge_log (
+            table_purge_from,
+            table_purge_to,
+            log_msg,
+            create_dt
+        ) VALUES (
+            from_table,
+            to_table,
+            v_log_message,
+            SYSDATE
+        );
+
+		-- insert the old records into history table
+        v_select_query := 'insert into '
+        || to_table
+        || ' select * from '
+        || from_table
+        || ' where '
+        || purge_column
+        || '<='
+        || 'sysdate - '
+        || purge_day;
+
+        EXECUTE IMMEDIATE v_select_query;
+
+        v_log_message := '['
+        || SQL%rowcount
+        || '] Rows Inserted';
+
+        INSERT INTO table_purge_log (
+            table_purge_from,
+            table_purge_to,
+            log_msg,
+            create_dt
+        ) VALUES (
+            from_table,
+            to_table,
+            v_log_message,
+            SYSDATE
+        );
+
+		-- Delete the old records
+        v_delet_query := 'delete from '
+        || from_table
+        || ' where '
+        || purge_column
+        || '<='
+        || 'sysdate - '
+        || purge_day;
+
+        EXECUTE IMMEDIATE v_delet_query;
+
+        v_log_message := '['
+        || SQL%rowcount
+        || '] Rows Deleted';
+
+        INSERT INTO table_purge_log (
+            table_purge_from,
+            table_purge_to,
+            log_msg,
+            create_dt
+        ) VALUES (
+            from_table,
+            to_table,
+            v_log_message,
+            SYSDATE
+        );
+
+	INSERT INTO table_purge_log (
+            table_purge_from,
+            table_purge_to,
+            log_msg,
+            create_dt
+        ) VALUES (
+            from_table,
+            to_table,
+            'Execution Completed',
+            SYSDATE
+        );
+
+    END IF;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure TEST_PROCEDURE_123
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."TEST_PROCEDURE_123" AS
+
+    v_upd_count       NUMBER := 0;
+    v_fetchcount      NUMBER := 0;
+    v_clearpan        VARCHAR2(25) := ' ';
+    v_accno           VARCHAR2(25) := ' ';
+    v_accdet_id       NUMBER(10) := 0;
+    exception_raised  BOOLEAN := false;
+    v_inst_id         NUMBER(10) := 0;
+    CURSOR crddetupd_cur IS
+    SELECT
+        pan,
+        substr(accno, - 13) accno
+    FROM
+        crdbasemig_2
+    WHERE
+        acc_type = 'P';
+
+    TYPE type_rec_cur IS
+        TABLE OF crddetupd_cur%rowtype INDEX BY PLS_INTEGER;
+    row_rec_cur       type_rec_cur;
+BEGIN
+    OPEN crddetupd_cur;
+    LOOP
+        FETCH crddetupd_cur BULK COLLECT INTO row_rec_cur LIMIT 25000;
+        EXIT WHEN row_rec_cur.count = 0;
+        FOR idx IN 1..row_rec_cur.count LOOP
+            v_clearpan := row_rec_cur(idx).pan;
+            v_accno := row_rec_cur(idx).accno;
+            v_fetchcount := v_fetchcount + 1;
+            dbms_output.put_line('PAN: '
+                                 || v_clearpan
+                                 || ' ACCNO:'
+                                 || v_accno);
+            BEGIN
+                SELECT
+                    id
+                INTO v_accdet_id
+                FROM
+                    accdet
+                WHERE
+                        accno = v_accno
+                    AND inst_id = v_inst_id
+                    AND currcode = '356';
+
+            EXCEPTION
+                WHEN no_data_found THEN
+                    dbms_output.put_line('ACCNO not found ' || v_accno);
+                    exception_raised := true;
+            END;
+
+            IF exception_raised = false THEN
+                BEGIN
+                    UPDATE crddet
+                    SET
+                        accdet_id = v_accdet_id
+                    WHERE
+                            pan = v_clearpan
+                        AND seqno = 0;
+
+                EXCEPTION
+                    WHEN no_data_found THEN
+                        dbms_output.put_line('PAN not found ' || v_clearpan);
+                        exception_raised := true;
+                END;
+            END IF;
+
+            IF exception_raised = false THEN
+                v_upd_count := v_upd_count + 1;
+            END IF;
+        END LOOP;
+
+    END LOOP;
+
+    CLOSE crddetupd_cur;
+    dbms_output.put_line('Total records Fetched: ' || v_fetchcount);
+    dbms_output.put_line('Total records Updated: ' || v_upd_count);
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure TEST_PROCEDURE_1234
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."TEST_PROCEDURE_1234" as
+    vtotalcount   NUMBER := 0;
+    v_count       NUMBER := 0;
+    v_clearpan    VARCHAR2(25) := ' ';
+    CURSOR product_cur IS 
+    SELECT cp.id
+    FROM crdproduct cp, inst i
+    WHERE cp.inst_id = i.id
+    AND   i.instcode = 'OBC'
+	AND   cp.id not in (1004, 1003, 1002,  977, 1007,  976, 1016);
+
+    CURSOR migupd_cur ( v_prod_id crdproduct.id%TYPE) IS 
+    SELECT
+        cd.usrdata,
+        cd.pan,
+        cd.iss_host_crdref,
+        CASE
+                WHEN cd.statcode = '00' THEN 'N'
+                WHEN cd.statcode IN ( '04', '06' ) THEN 'B'
+                WHEN cd.statcode = '07' THEN 'C'
+                ELSE cd.statcode
+            END
+        stat_code,
+        TO_CHAR(cd.expdate,'DD-MM-YYYY') expdate,
+        ad.accno,
+        TO_CHAR(cd.effdate,'DD-MM-YYYY') issued_date,
+        CASE
+                WHEN cd.dlv_method = 0 THEN 'Y' -- Deliver to Customer
+                WHEN cd.dlv_method = 1
+                     AND cx.limitprofile != 'OBCNIL'
+                     AND cx.mis_flag LIKE 'PC%' THEN 'Y' -- Deliver to Branch
+                WHEN cd.dlv_method = 1
+                     AND cx.limitprofile = 'OBCNIL'
+                     AND cx.mis_flag LIKE 'PC%' THEN 'N'
+                WHEN cx.mis_flag IN ( 'WA', 'RA' ) THEN 'Y'
+                WHEN cx.mis_flag IN ( 'WI', 'RI' ) THEN 'N'
+                ELSE 'O'
+        END AS mis_flag
+    FROM
+        crddet cd,
+        crddet_x cx,
+        accdet ad,
+        inst i
+    WHERE
+        cd.id = cx.crddet_id
+        AND   cd.crdproduct_id = v_prod_id
+        AND   cd.accdet_id = ad.id
+		AND   ad.accno != '9999999999'
+        AND   ad.inst_id = i.id
+        AND   i.instcode = 'OBC'
+    UNION
+    SELECT
+        cd.usrdata,
+        cd.pan,
+        cd.iss_host_crdref,
+        CASE
+                WHEN cd.statcode = '00' THEN 'N'
+                WHEN cd.statcode IN ( '04', '06' ) THEN 'B'
+                WHEN cd.statcode = '07' THEN 'C'
+                ELSE cd.statcode
+        END
+        stat_code,
+        TO_CHAR(cd.expdate,'DD-MM-YYYY') expdate,
+        ad.accno,
+        TO_CHAR(cd.effdate,'DD-MM-YYYY') issued_date,
+        CASE
+                WHEN cd.dlv_method = 0 THEN 'Y' -- Deliver to Customer
+                WHEN cd.dlv_method = 1
+                     AND cx.limitprofile != 'OBCNIL'
+                     AND cx.mis_flag LIKE 'PC%' THEN 'Y' -- Deliver to Branch
+                WHEN cd.dlv_method = 1
+                     AND cx.limitprofile = 'OBCNIL'
+                     AND cx.mis_flag LIKE 'PC%' THEN 'N'
+                WHEN cx.mis_flag IN ( 'WA', 'RA' ) THEN 'Y'
+                WHEN cx.mis_flag IN ( 'WI', 'RI' ) THEN 'N'
+                ELSE 'O'
+        END AS mis_flag
+    FROM
+        crddet cd,
+        crddet_x cx,
+        accdet ad,
+        crdacc ca,
+        inst i
+    WHERE
+        cd.id = cx.crddet_id
+        AND   cd.crdproduct_id = v_prod_id
+        AND   ca.accdet_id = ad.id
+        AND   ca.crddet_id = cd.id
+		AND   ad.accno != '9999999999'
+        AND   ad.inst_id = i.id
+        AND   i.instcode = 'OBC';
+
+    TYPE type_rec_cur IS
+        TABLE OF migupd_cur%rowtype INDEX BY PLS_INTEGER;
+    row_rec_cur   type_rec_cur;
+    prod_id       NUMBER(10);
+	batch_cnt	  number := 0;
+BEGIN 
+    OPEN product_cur;
+    LOOP 
+        FETCH product_cur INTO PROD_ID;
+        EXIT WHEN product_cur%NOTFOUND;
+        dbms_output.put_line('Card Product ID : '||PROD_ID);
+
+        OPEN migupd_cur (PROD_ID);
+        LOOP
+            FETCH migupd_cur BULK COLLECT INTO row_rec_cur LIMIT 25000;
+            EXIT WHEN row_rec_cur.count = 0;
+            FOR idx IN 1..row_rec_cur.count 
+            LOOP
+                v_clearpan := row_rec_cur(idx).pan;
+
+                IF row_rec_cur(idx).iss_host_crdref LIKE 'MOBC%'
+                THEN
+                    SELECT pan
+                    INTO v_clearpan
+                    FROM crdbasemig_2
+                    WHERE iss_host_crdref = row_rec_cur(idx).iss_host_crdref;
+                ELSE
+                    v_clearpan := row_rec_cur(idx).pan;
+                END IF;
+
+                /*INSERT INTO obc_cbs_mig_data VALUES (
+                    row_rec_cur(idx).usrdata,
+                    v_clearpan,
+                    row_rec_cur(idx).iss_host_crdref,
+                    row_rec_cur(idx).stat_code,
+                    row_rec_cur(idx).expdate,
+                    row_rec_cur(idx).accno,
+                    row_rec_cur(idx).issued_date,
+                    row_rec_cur(idx).mis_flag,
+                    ' ',
+					0
+                ); */
+
+                /*dbms_output.put_line('pan ='
+                || row_rec_cur(idx).pan || '|' || 'usrdata=' || row_rec_cur(idx).usrdata || '|' || 'accno=' || row_rec_cur(idx).accno);
+
+                dbms_output.put_line('v_clearpan ='
+                || v_clearpan || '|' || 'usrdata=' || row_rec_cur(idx).usrdata || '|' || 'accno=' || row_rec_cur(idx).accno); */
+
+                vtotalcount := vtotalcount + 1;
+            end loop;
+            COMMIT;
+        end  loop;
+        CLOSE migupd_cur;
+        dbms_output.put_line('Total OBC_CBS_MIG_DATA Records Matched: ' || vtotalcount);
+    end loop;
+    close product_cur;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure TRIM_NON_DUPLICATE_ACCNO
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."TRIM_NON_DUPLICATE_ACCNO" 
+AS
+	v_pending_account_count  NUMBER := 0;
+	v_updated_Count			 NUMBER := 0;
+BEGIN
+	FOR idx in 1..3
+  LOOP
+		select count(1) into v_pending_account_count from accdet where inst_id = 110 and length(accno) = 19 and substr(accno, 6, 13) not in (select accno from accdet) and substr(accno, 6, 13) not in (select trim_accno from uni_accno_trimming_helper);
+		IF v_pending_account_count > 0
+		THEN
+			update accdet set accno = substr(accno, 6, 13) where inst_id = 110 and length(accno) = 19 and substr(accno, 6, 13) not in (select accno from accdet) and substr(accno, 6, 13) not in (select trim_accno from uni_accno_trimming_helper) and rownum <= 10;
+			
+			dbms_output.put_line ('Updated ' || SQL%ROWCOUNT || ' rows in ACCDET ');
+			--v_tot_crdacc_cnt := v_tot_crdacc_cnt + SQL%ROWCOUNT;
+			v_updated_Count := v_updated_Count + SQL%ROWCOUNT;
+			commit;
+		ELSE
+      dbms_output.put_line ('Totally Updated ' || v_updated_Count || ' rows in ACCDET ');
+			EXIT;
+		END IF;
+  END LOOP;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure TST_UPD_CRDDET_ID_CRDSTATHIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."TST_UPD_CRDDET_ID_CRDSTATHIST" IS
+
+	v_crddet_id		number(10) := 0;
+	ErrorMsg		varchar2(100):= null;
+
+	CURSOR MIG_CUR1 IS
+	SELECT distinct mig.ISS_HOST_CRDREF, mig.PAN
+	FROM crdbasemig_x mig, CRDSTATHIST CHST
+	WHERE mig.PAN = CHST.PAN
+	AND VPAN is NULL;
+
+	TYPE type_rec_cur1 IS
+        TABLE OF MIG_CUR1%rowtype INDEX BY PLS_INTEGER;
+    rec1   type_rec_cur1;
+
+	CURSOR MIG_CUR2 IS
+	SELECT * FROM CRDSTATHIST WHERE VPAN IS NOT NULL
+	AND STATUS != 'P'
+	ORDER BY PAN, DATE_SET, TIME_SET;
+
+	TYPE type_rec_cur2 IS
+        TABLE OF MIG_CUR2%rowtype INDEX BY PLS_INTEGER;
+    rec2   type_rec_cur2;
+
+BEGIN
+	OPEN MIG_CUR1;
+	LOOP
+		FETCH MIG_CUR1 BULK COLLECT INTO rec1 LIMIT 25000;
+		EXIT WHEN rec1.count = 0;
+
+		FOR idx IN 1..rec1.count
+        LOOP
+			UPDATE CRDSTATHIST SET VPAN = rec1(idx).ISS_HOST_CRDREF WHERE PAN = rec1(idx).PAN;
+		END LOOP;
+	END LOOP;
+	CLOSE MIG_CUR1;
+	COMMIT;
+
+	OPEN MIG_CUR2;
+	LOOP
+		FETCH MIG_CUR2 BULK COLLECT INTO rec2 LIMIT 25000;
+		EXIT WHEN rec2.count = 0;
+
+		FOR idx IN 1..rec2.count
+        LOOP
+			BEGIN
+				ErrorMsg := 'While Select from CRDDET for VPAN - '|| rec2(idx).VPAN;
+				SELECT ID INTO v_crddet_id FROM CRDDET WHERE ISS_HOST_CRDREF = rec2(idx).VPAN;
+
+				ErrorMsg := 'While Insert into CDSTHST for RECORD ID - '|| rec2(idx).ID;
+				INSERT INTO CDSTHST (OLD_STATCODE, NEW_STATCODE, DATE_SET, TIME_SET, WHY_SET, WHO_SET, CTXDATE, CRDDET_ID, EXPDATE)
+				VALUES (rec2(idx).old_statcode, rec2(idx).new_statcode, rec2(idx).date_set, rec2(idx).time_set,
+						rec2(idx).why_set, rec2(idx).who_set, sysdate, v_crddet_id, rec2(idx).expdate);
+
+				ErrorMsg := 'While Update CRDSTATHIST for RECORD ID - '|| rec2(idx).ID;
+				UPDATE CRDSTATHIST SET STATUS = 'P' where ID = rec2(idx).ID;
+
+			EXCEPTION
+				WHEN OTHERS THEN
+					dbms_output.put_line ('Error While '||ErrorMsg||':'||SQLERRM);
+			END;
+
+		END LOOP;
+	END LOOP;
+	CLOSE MIG_CUR2;
+
+	COMMIT;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure UNBLK_CORP_AUTH
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."UNBLK_CORP_AUTH" 
+	(
+		cinst           IN aprvlhist.inst_id%TYPE,
+		cpan            IN aprvlhist.pan%TYPE,
+		cseqno          IN aprvlhist.seqno%TYPE,
+		cmsgcls         IN aprvlhist.msgcls%TYPE,
+		ctxncode        IN aprvlhist.txncode%TYPE,
+		csrc_amtblk     IN aprvlhist.amtbill%TYPE,
+		csrc_amtbill    IN aprvlhist.amtbill%TYPE,
+		cfintlogid      IN aprvlhist.fintlogid%TYPE,
+		chld_accno	IN aprvlhist.accno%TYPE
+	)
+is
+BEGIN
+	NULL;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure UPDACCDETID_4_SAMEACCTOTHRINST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."UPDACCDETID_4_SAMEACCTOTHRINST" (
+    v_from_inst   inst.instcode%TYPE,
+    v_to_inst     inst.instcode%TYPE
+) IS
+
+    v_tot_accx_cnt        NUMBER := 0;
+    v_tot_crdacc_cnt      NUMBER := 0;
+    v_tot_crdaccupl_cnt   NUMBER := 0;
+    v_tot_card_cnt        NUMBER := 0;
+    v_to_accdet_id        NUMBER := 0;
+    v_from_accdet_id      NUMBER := 0;
+    v_from_accno          accdet.accno%TYPE := ' ';
+
+    CURSOR accdet_id_cur IS 
+    SELECT
+        from_accdet.id,
+        to_accdet.id,
+        from_accdet.accno
+    FROM
+        accdet to_accdet,
+        accdet from_accdet
+    WHERE
+        from_accdet.inst_id = ( SELECT id FROM inst WHERE instcode = v_from_inst )
+    AND   to_accdet.inst_id = ( SELECT id FROM inst WHERE instcode = v_to_inst )
+    AND   to_accdet.accno = from_accdet.accno;
+    --FOR UPDATE;
+
+    CURSOR crdupd_cur ( v_accdet_id crddet.accdet_id%TYPE ) IS
+    SELECT id
+    FROM crddet
+    WHERE accdet_id = v_accdet_id
+    FOR UPDATE;
+
+    TYPE type_crdrec_cur IS TABLE OF crdupd_cur%rowtype INDEX BY PLS_INTEGER;
+    crdrec               type_crdrec_cur;
+
+BEGIN
+    OPEN accdet_id_cur;
+    LOOP
+        FETCH accdet_id_cur INTO v_from_accdet_id, v_to_accdet_id, v_from_accno;
+        EXIT WHEN accdet_id_cur%notfound;
+        -- Open cursor for the crddet using accdetid
+        OPEN crdupd_cur(v_from_accdet_id);
+        -- Update the crddet table with new accdet_id
+        LOOP
+            FETCH crdupd_cur BULK COLLECT INTO crdrec LIMIT 25000;
+            EXIT WHEN crdrec.count = 0;
+            FOR idx IN 1..crdrec.count LOOP
+                UPDATE crddet
+                SET accdet_id = v_to_accdet_id
+                WHERE id = crdrec(idx).id
+                AND   accdet_id != v_to_accdet_id;
+
+                dbms_output.put_line('CRDDET_ID: ' || crdrec(idx).id || ' OLD ACCDET ID: ' || v_from_accdet_id || ' ACCNO: ' || v_from_accno || ' NEW ACCDET ID: ' || v_to_accdet_id);
+                v_tot_card_cnt := v_tot_card_cnt + 1 ;
+            END LOOP;
+
+            dbms_output.put_line('Committed ' || v_tot_card_cnt|| ' records in CRDDET ');
+            --COMMIT;
+            ROLLBACK;
+        END LOOP;
+
+        CLOSE crdupd_cur;
+
+        UPDATE crdacc
+        SET accdet_id = v_to_accdet_id
+        WHERE accdet_id = v_from_accdet_id
+        AND   accdet_id != v_to_accdet_id;
+
+        dbms_output.put_line('CRDACC: OLD ACCDET ID: ' || v_from_accdet_id || ' ACCNO: ' || v_from_accno || ' NEW ACCDET ID: ' || v_to_accdet_id);
+        v_tot_crdacc_cnt := v_tot_crdacc_cnt + SQL%rowcount;
+        dbms_output.put_line('Committed ' || v_tot_crdacc_cnt || ' records in crdacc ');
+        ROLLBACK;
+        --COMMIT;
+
+        -- Update the accdet_x table with new accdet_id
+        UPDATE accdet_x
+        SET accdet_id = v_to_accdet_id
+        WHERE id = v_from_accdet_id
+        AND   accdet_id != v_to_accdet_id;
+
+        v_tot_accx_cnt := v_tot_accx_cnt + SQL%rowcount;
+        dbms_output.put_line('ACCDET_X: OLD ACCDET ID: ' || v_from_accdet_id || ' ACCNO: ' || v_from_accno || ' NEW ACCDET ID: ' || v_to_accdet_id);
+        dbms_output.put_line('Committed '|| v_tot_accx_cnt|| ' records in accdet_x ');
+        ROLLBACK;
+        --COMMIT;
+
+        -- Update the crdaccupl table with new accdet_id
+        UPDATE crdaccupl
+        SET accdet_id = v_to_accdet_id
+        WHERE id = v_from_accdet_id
+        AND   accdet_id != v_to_accdet_id;
+
+        v_tot_crdaccupl_cnt := v_tot_crdaccupl_cnt + SQL%rowcount;
+        dbms_output.put_line('CRDACCUPL: OLD ACCDET ID: ' || v_from_accdet_id || ' ACCNO: ' || v_from_accno || ' NEW ACCDET ID: ' || v_to_accdet_id);
+        dbms_output.put_line('Committed '|| v_tot_crdaccupl_cnt|| ' records in crdaccupl ');
+        ROLLBACK;
+        --COMMIT;
+
+        dbms_output.put_line('Total Records Updated in ACCDET_X..: '|| v_tot_accx_cnt);
+        dbms_output.put_line('Total Records Updated in CRDACC....: '|| v_tot_crdacc_cnt);
+        dbms_output.put_line('Total Records Updated in CRDACCUPL.: '|| v_tot_crdaccupl_cnt);
+        dbms_output.put_line('Total Records Cards Updated........: '|| v_tot_card_cnt);
+
+    END LOOP;
+
+    CLOSE accdet_id_cur;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure UPDATE_ACCOUNT_INST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."UPDATE_ACCOUNT_INST" (
+    v_from_inst    inst.instcode%TYPE,
+    v_to_inst      inst.instcode%TYPE,
+    commit_count   NUMBER
+) IS
+    v_acctype       accdet.typecode%TYPE := NULL;
+    v_accno         accdet.accno%TYPE := NULL;
+    v_accdet_id     accdet.id%TYPE := NULL;
+    v_frm_inst_id   inst.id%TYPE := 0;
+    v_to_inst_id    inst.id%TYPE := 0;
+    v_branch_id     branch.id%TYPE := 0;
+    v_from_branch   branch.brncode%TYPE := NULL;
+    v_count         NUMBER(10) := 0;
+    v_stmt          VARCHAR2(100) := NULL;
+
+    CURSOR acc_cursor IS 
+    SELECT ac.id, ac.accno, br.brncode, acmap.acctype
+    FROM accdet ac, accdet_x acx, branch br, obc_scheme_acctype acmap, inst i    
+    WHERE
+        ac.id = acx.accdet_id
+        AND   acx.usrdata1 = acmap.scheme
+        AND   ac.inst_id = i.id
+        AND   br.id = ac.branch_id
+        AND   br.inst_id = ac.inst_id
+        AND   i.instcode = v_from_inst
+        --AND   ROWNUM < 11
+        ;
+BEGIN
+    BEGIN
+        v_stmt := 'Get From INST_ID for FROM INSTCODE - ' || v_from_inst;
+        SELECT id INTO v_frm_inst_id
+        FROM inst
+        WHERE instcode = v_from_inst;
+
+        v_stmt := 'Get From INST_ID for TO INSTCODE - '|| v_from_inst;
+        SELECT id INTO v_to_inst_id
+        FROM inst
+        WHERE instcode = v_to_inst;
+    EXCEPTION WHEN OTHERS THEN
+        dbms_output.put_line('Error While ---'|| v_stmt || ' '|| substr(sqlerrm,1,200) );
+    END;
+
+    OPEN acc_cursor;
+    loop
+        FETCH acc_cursor INTO v_accdet_id,v_accno,v_from_branch,v_acctype;
+        EXIT WHEN acc_cursor%notfound;
+
+        v_count := v_count + 1;
+        v_stmt := 'Updating the ACCDET with inst_id as ['|| v_to_inst_id|| '] Typecode as ['|| v_acctype|| '] FOR ACCDET_ID - '|| v_accdet_id;
+
+        BEGIN
+            SELECT id INTO v_branch_id
+            FROM branch
+            WHERE brncode = v_from_branch || '10'
+            AND inst_id = v_to_inst_id; 
+        EXCEPTION when others then
+            dbms_output.put_line('BRANCH CODE ['||v_from_branch||'10] NOT FOUND UNDER ['|| v_to_inst||']');
+            continue;
+        END;
+
+        dbms_output.put_line('v_stmt: '|| v_stmt);
+
+        UPDATE accdet
+        SET inst_id = v_to_inst_id,
+            branch_id = v_branch_id,
+            typecode = v_acctype
+        WHERE id = v_accdet_id;
+    end loop;
+    rollback;
+ EXCEPTION
+    WHEN OTHERS THEN
+        dbms_output.put_line('Error While ---'
+        || v_stmt
+        || ' '
+        || substr(sqlerrm,1,200) );
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure UPDATE_AMXATMREC
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."UPDATE_AMXATMREC" 
+	(
+		in_tlogid	in tlog.id%TYPE,
+		in_amtset	in tlog.amtset%TYPE,
+		in_curset	in tlog.curset%TYPE,
+		in_aprvlcode	in tlog.aprvlcode%TYPE,
+		in_actioncode	in tlog.actioncode%TYPE,
+		in_rspcode	in tlog.rspcode%TYPE,
+		in_txnstatus	in tlog.txnstatus%TYPE
+	)
+AS tmp NUMBER(5,0);
+BEGIN
+	tmp := 0;
+	-- Dummy (empty) create or replace procedure, since this is in common
+	-- This is for customers without ifm.
+
+-- Real create or replace procedure (for amex customers) is in
+-- base/amex/src/crdb/schema_ora
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure UPDATE_CRD_ACC_BRID
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."UPDATE_CRD_ACC_BRID" (
+	v_from_inst 	inst.instcode%type, 
+	v_to_inst 		inst.instcode%type,
+	v_pad_string	branch.brncode%type)
+IS
+    v_tot_acct_cnt		NUMBER := 0;
+	v_tot_card_cnt		NUMBER := 0;
+    v_to_brid			NUMBER := 0;
+    v_from_brid			NUMBER := 0;
+
+    CURSOR branch_id_cur IS 
+	SELECT
+        from_br.id,
+        to_br.id
+    FROM
+        branch to_br,
+        branch from_br
+    WHERE
+        from_br.inst_id = (SELECT ID FROM INST WHERE INSTCODE = v_from_inst)
+        AND   to_br.inst_id = (SELECT ID FROM INST WHERE INSTCODE = v_to_inst)
+        AND   to_br.brncode = from_br.brncode || v_pad_string;
+
+    CURSOR mig_crdupd_cur (v_branch_id crddet.branch_id%TYPE) IS
+	SELECT id 
+	FROM crddet
+    WHERE branch_id = v_branch_id;
+
+    TYPE type_crdrec_cur IS
+        TABLE OF mig_crdupd_cur%rowtype INDEX BY PLS_INTEGER;
+    crdrec           type_crdrec_cur;
+
+    CURSOR mig_accupd_cur (v_branch_id accdet.branch_id%TYPE) IS
+	SELECT id 
+	FROM accdet
+    WHERE branch_id = v_branch_id;
+
+    TYPE type_accrec_cur IS
+        TABLE OF mig_accupd_cur%rowtype INDEX BY PLS_INTEGER;
+    accrec           type_accrec_cur;
+
+BEGIN
+    OPEN branch_id_cur;
+    LOOP
+        FETCH branch_id_cur INTO v_from_brid, v_to_brid;
+        EXIT WHEN branch_id_cur%notfound;
+
+        -- Open cursor for the crddet using branchid
+		OPEN mig_crdupd_cur(v_from_brid);
+
+        -- Update the crddet table with new branch_id
+        LOOP
+            FETCH mig_crdupd_cur BULK COLLECT INTO crdrec LIMIT 25000;
+            EXIT WHEN crdrec.count = 0;
+            FOR idx IN 1..crdrec.count LOOP
+                UPDATE crddet
+                SET	branch_id = v_to_brid
+                WHERE id = crdrec(idx).id;
+
+				dbms_output.put_line('CRDDET_ID: ' ||crdrec(idx).id||' OLD BRID: ' ||v_from_brid ||' NEW BRID: '|| v_to_brid);
+
+                v_tot_card_cnt := v_tot_card_cnt + 1;
+            END LOOP;
+        END LOOP;
+        CLOSE mig_crdupd_cur;
+
+        -- Open cursor for the accdet using branchid
+		OPEN mig_accupd_cur(v_from_brid);
+
+        -- Update the accdet table with new branch_id
+        LOOP
+            FETCH mig_accupd_cur BULK COLLECT INTO accrec LIMIT 25000;
+            EXIT WHEN accrec.count = 0;
+            FOR idx IN 1..accrec.count LOOP
+                UPDATE accdet
+                SET	branch_id = v_to_brid
+                WHERE id = accrec(idx).id;
+
+				dbms_output.put_line('ACCDET: ' ||accrec(idx).id||' OLD BRID: ' ||v_from_brid ||' NEW BRID: '|| v_to_brid);
+
+                v_tot_acct_cnt := v_tot_acct_cnt + 1;
+            END LOOP;
+        END LOOP;
+        CLOSE mig_accupd_cur;
+
+        dbms_output.put_line('Total Records Accounts Updated: ' || v_tot_acct_cnt);
+		dbms_output.put_line('Total Records Cards Updated: ' || v_tot_card_cnt);
+    END LOOP;
+
+    CLOSE branch_id_cur;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure UPDATE_PREGENPIN
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."UPDATE_PREGENPIN" (old_statcode 	in crddet.statcode%type,
+					new_statcode 		in crddet.statcode%type,
+					in_pan			in crddet.pan%type,
+					in_seqno		in crddet.seqno%type) is
+begin
+
+NULL;
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure UPDATE_RPLACE_CRDDET_ID
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."UPDATE_RPLACE_CRDDET_ID" 
+(	o_crddet_id in caccdet.crddet_id%TYPE,
+	n_crddet_id in caccdet.crddet_id%TYPE)
+--For charge cardis if the master card is replaced then the pan of the master
+--card needs to ibe set to the new pan in the corresponding caccdet record
+is
+	in_o_crddet_id	caccdet.crddet_id%TYPE := o_crddet_id;
+	in_n_crddet_id	caccdet.crddet_id%TYPE := n_crddet_id;
+begin
+	if in_o_crddet_id is null then
+		in_o_crddet_id := 0;
+end if;
+
+	if in_n_crddet_id is null then
+		in_n_crddet_id := 0;
+end if;
+
+	update	caccdet
+	set     crddet_id = in_n_crddet_id
+	where   crddet_id = in_o_crddet_id;
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure UPDATE_TERMATMSTATHST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."UPDATE_TERMATMSTATHST" (
+	i_termcode	TERMATM.termcode%type,
+	i_oldctxonline	TERMATM.ctxonline%type,
+	i_newctxonline	TERMATM.ctxonline%type,
+	i_oldstatereq	TERMATM.statereq%type,
+	i_newstatereq	TERMATM.statereq%type,
+	i_oldstateact	TERMATM.stateact%type,
+	i_newstateact	TERMATM.stateact%type) is
+begin
+	-- do nothing
+	NULL;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure UPD_ACCDET_INST_ID
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."UPD_ACCDET_INST_ID" (
+    v_from_inst   inst.instcode%TYPE,
+    v_to_inst     inst.instcode%TYPE
+) IS
+    v_accdet_id			NUMBER := 0;
+	v_tot_cnt			NUMBER := 0;
+    v_from_inst_id      inst.id%type;
+    v_to_inst_id        inst.id%type;
+	v_instcode			inst.instcode%TYPE;
+	got_exception		boolean:= FALSE;
+
+    CURSOR accdet_id_cur IS 
+    SELECT ac.id
+    FROM   accdet ac
+    WHERE ac.inst_id = ( SELECT id FROM inst WHERE instcode = v_from_inst )
+	and not exists (select 1 from accdet, inst i where accno = ac.accno and inst_id = i.id and instcode = v_to_inst);
+
+	TYPE accdet_id_cur_cur IS TABLE OF accdet_id_cur%rowtype INDEX BY PLS_INTEGER;
+    accrec	accdet_id_cur_cur;
+
+BEGIN
+
+	BEGIN
+		v_instcode := v_from_inst;
+		select id into v_from_inst_id from inst where instcode = v_from_inst;
+		v_instcode := v_to_inst;
+		select id into v_to_inst_id from inst where instcode = v_to_inst;
+	EXCEPTION WHEN OTHERS THEN
+		dbms_output.put_line ('Inst not found : '|| v_instcode);
+		got_exception := TRUE;
+	END;
+
+	IF got_exception = FALSE THEN
+		OPEN accdet_id_cur;
+		v_tot_cnt := 0;
+		LOOP
+			FETCH accdet_id_cur BULK COLLECT INTO accrec LIMIT 25000;
+			EXIT WHEN accrec.count = 0;
+
+			FOR idx IN 1..accrec.count
+			LOOP
+				UPDATE accdet
+				SET inst_id = v_to_inst_id
+				WHERE id = accrec(idx).id
+				AND   inst_id = v_from_inst_id;
+
+				v_tot_cnt := v_tot_cnt + SQL%rowcount;
+			END LOOP;
+			dbms_output.put_line('Committed ' || v_tot_cnt || ' records in accdet ');
+			COMMIT;
+		END LOOP;
+		dbms_output.put_line('Total Records Updated in ACCDET..: '|| v_tot_cnt);
+        CLOSE accdet_id_cur;
+	END IF;
+END;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure UPD_CRDDET_X_DATE_CYCFEE_MOVED
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."UPD_CRDDET_X_DATE_CYCFEE_MOVED" (p_crddet_id in
+				crddet.id%type)
+is
+	date_moved date;
+	in_crddet_id      crddet.id%type := p_crddet_id;
+begin
+	if in_crddet_id is null then
+in_crddet_id := 0;
+end if;
+	date_moved := getsysdate();
+
+	update CRDDET_X set date_cycfee_moved = date_moved
+	where crddet_id = in_crddet_id;
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure UPD_INSTA_CARD
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."UPD_INSTA_CARD" ()
+is
+        rcbc_custdet_id         number;
+        rsb_custdet_id          number;
+        rcbc_accdet_id          number;
+        rsb_accdet_id           number;
+begin
+        select id into rcbc_accdet_id from ACCDET WHERE INST_ID = '2' AND ACCNO = '9999999999';
+        select id into rsb_accdet_id from ACCDET WHERE INST_ID = '3' AND ACCNO = '9999999999';
+        select id into rcbc_custdet_id from CUSTDET WHERE INST_ID = '2' AND CUSTCODE = '99999999';
+        select id into rsb_custdet_id from CUSTDET WHERE INST_ID = '3' AND CUSTCODE = '99999999';
+
+        UPDATE CRDDET SET ACCDET_ID = rcbc_accdet_id,
+                        CUSTDET_ID = rcbc_custdet_id
+                WHERE ACCDET_ID = rsb_accdet_id
+                        AND CUSTDET_ID = rsb_custdet_id
+                AND STATCODE='02';
+        rollback;
+        --commit;
+end upd_insta_card;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_ACSLOG
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_ACSLOG" (tabname_IN IN char, keyval_IN IN char,
+				colname_IN IN char, oldval_IN IN char,
+				newval_IN IN char) is
+	tabname  varchar2(12) := tabname_IN;
+	keyval   varchar2(32) := keyval_IN;
+	colname  varchar2(20) := colname_IN;
+	oldval   varchar2(64) := oldval_IN;
+	newval   varchar2(64) := newval_IN;
+	descr acslog.descr%type;
+begin
+	descr := substr(rtrim(tabname, ' ')
+		|| ' '
+		|| rtrim(keyval, ' ')
+		|| ' '
+		|| rtrim(colname, ' ')
+		|| ' '
+		|| rtrim(oldval, ' ')
+		|| ' => '
+		|| rtrim(newval, ' '), 1, 255);
+	insert into acslog (id, acsdate,acstime, acsusr, descr)
+		values (0, TO_DATE(TO_CHAR(sysdate, 'YYYYMMDD'), 'YYYYMMDD'),
+		to_number(to_char(sysdate,'HH24MISS')),
+		substr(ltrim(ltrim(user,'OPS'),'$'), 1, 8) , descr);
+		-- values (acslog_sequence.nextval, sysdate, systime, user, descr);
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_ACSLOG_AUDITPAN
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_ACSLOG_AUDITPAN" (tabname_IN IN char,
+				 		  pan_IN IN char,
+						  seqno_IN IN char,
+						  pan_display_IN IN char,
+						  virtual_pan_IN IN char,
+						  colname_IN IN char,
+						  oldval_IN IN char,
+						  newval_IN IN char) is
+	tabname varchar2(12) := tabname_IN;
+	pan varchar2(19) := pan_IN;
+	seqno varchar2(4) := seqno_IN;
+	pan_display varchar2(19) := pan_display_IN;
+	virtual_pan varchar2(32) := virtual_pan_IN;
+	colname varchar2(20) := colname_IN;
+	oldval varchar2(64) := oldval_IN;
+	newval varchar2(64) := newval_IN;
+	descr acslog.descr%type;
+	AuditPANMask varchar2(1);
+	UseVirtualPAN varchar2(1);
+	PANToLog varchar2(40);
+	MSCcount number(10,0);
+begin
+	select count(*) into MSCcount from MSC where tag='auditpanmask' and idx=1;
+	if (MSCcount = 1) then
+		select substr(string_t,1,1) into AuditPANMask from MSC where tag='auditpanmask' and idx=1;
+	end if;
+	if AuditPANMask is null then
+		AuditPANMask := 'N';
+	end if;
+	select count(*) into MSCcount from MSC where tag='usevirtualpan' and idx=1;
+	if (MSCcount = 1) then
+		select substr(string_t,1,1) into UseVirtualPAN from MSC where tag='usevirtualpan' and idx=1;
+	end if;
+	if UseVirtualPAN is null then
+		UseVirtualPAN := 'N';
+	end if;
+	PANToLog := pan || seqno;
+	if (AuditPANMask = 'Y') then
+		if (UseVirtualPAN = 'Y') then
+			PANToLog := virtual_pan || seqno;
+		else
+			PANToLog := pan_display || seqno;
+		end if;
+	end if;
+	descr := substr(rtrim(tabname, ' ')
+		|| ' '
+		|| rtrim(PANToLog, ' ')
+		|| ' '
+		|| rtrim(colname, ' ')
+		|| ' '
+		|| rtrim(oldval, ' ')
+		|| ' => '
+		|| rtrim(newval, ' '), 1, 255);
+	insert into acslog (id, acsdate,acstime, acsusr, descr)
+		values (0, TO_DATE(TO_CHAR(sysdate,'YYYYMMDD'),'YYYYMMDD'),
+		to_number(to_char(sysdate,'HH24MISS')),
+		substr(ltrim(ltrim(user,'OPS'),'$'), 1, 8) , descr);
+		-- values (acslog_sequence.nextval, sysdate, systime, user, descr);
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_ADVICES
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_ADVICES" (tlogid_IN IN number, status_IN IN number, ctxdate IN date, ife_IN IN char) is
+tlogid number(20,0) := tlogid_IN;
+status number(5,0)  := status_IN;
+ife    varchar2(8)      := ife_IN;
+Local_exists number(10,0);
+begin
+	Local_exists := 0;
+	select count(string_t) into Local_exists from MSC
+where tag = 'advices_ife' and string_t=ife;
+
+if Local_exists > 0 then
+		insert into advices (tlogid, status, ctxdate, ife)
+		values (tlogid, status, ctxdate, ife);
+	end if;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_AMXATMREC
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_AMXATMREC" 
+	(
+		in_tlogid	in tlog.id%TYPE,
+		in_aiid		in tlog.aiid%TYPE,
+		in_stan		in tlog.stan%TYPE,
+		in_rrn		in tlog.rrn%TYPE,
+		in_datelocal	in tlog.datelocal%TYPE,
+		in_timelocal	in tlog.timelocal%TYPE,
+		in_fncode	in tlog.fncode%TYPE,
+		in_ctxdate	in tlog.ctxdate%TYPE,
+		in_pan		in tlog.pan%TYPE,
+		in_termcode	in tlog.termcode%TYPE,
+		in_amttxn	in tlog.amttxn%TYPE,
+		in_curtxn	in tlog.curtxn%TYPE,
+		in_pan_display  in tlog.pan_display%TYPE
+	)
+AS tmp NUMBER(5,0);
+BEGIN
+	tmp := 0;
+	-- Dummy (empty) create or replace procedure, since this is in common
+	-- This is for customers without ifm.
+
+-- Real create or replace procedure (for amex customers) is in
+-- base/amex/src/crdb/schema_ora
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_CHARGEDATA
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_CHARGEDATA" (
+i_crddet_id     in CHARGEDATA.crddet_id%type,
+i_chargetype    in CHARGEDATA.chargetype%type,
+i_chargedata    in CHARGEDATA.chargedata%type,
+i_chargecur     in CHARGEDATA.chargecur%type,
+i_custtype      in CHARGEDATA.custtype%type,
+i_opdata        in CHARGEDATA.opdata%type,
+i_processed     in CHARGEDATA.processed%type
+) IS
+x_ctxdate CHARGEDATA.ctxdate%type;
+in_crddet_id      CHARGEDATA.crddet_id%type := i_crddet_id;
+begin
+if in_crddet_id is null then
+in_crddet_id := 0;
+end if;
+
+select date_t into x_ctxdate from msc where tag = 'cursysdate';
+
+insert into CHARGEDATA (ctxdate, crddet_id, chargetype, chargedata,
+chargecur, custtype, opdata, processed)
+values  (x_ctxdate, in_crddet_id, i_chargetype, i_chargedata,
+i_chargecur, i_custtype, i_opdata, i_processed);
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_CRDBTCHLOG
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_CRDBTCHLOG" (
+i_id            IN crdbtchlog.id%type,
+i_batch         IN crdbtchlog.batch%type,
+i_delstatus     IN crdbtchlog.delstatus%type,
+i_location      IN crdbtchlog.location%type,
+i_whoset        IN crdbtchlog.whoset%type,
+i_evtype        IN crdbtchlog.evtype%type,
+i_evvalue       IN crdbtchlog.evvalue1%type,
+i_ctxdate       IN crdbtchlog.ctxdate%type) is
+
+BEGIN
+INSERT INTO crdbtchlog( id,
+				batch,
+				delstatus,
+				location,
+				whoset,
+				evtype,
+				evvalue1,
+				evvalue2,
+				ctxdate,
+				actdatetime
+				)
+			values( i_id,
+				i_batch,
+				i_delstatus,
+				i_location,
+				i_whoset,
+				i_evtype,
+				i_evvalue,
+				i_evvalue,
+				i_ctxdate,
+				sysdate
+				);
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_CRDBTCHLOG_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_CRDBTCHLOG_HIST" (
+i_id            IN crdbtchlog_hist.id%type,
+i_crdbtchlog_id IN crdbtchlog_hist.crdbtchlog_id%type,
+i_batch         IN crdbtchlog_hist.batch%type,
+i_delstatus     IN crdbtchlog_hist.delstatus%type,
+i_location      IN crdbtchlog_hist.location%type,
+i_whoset        IN crdbtchlog_hist.whoset%type,
+i_evtype        IN crdbtchlog_hist.evtype%type,
+i_evvalue1      IN crdbtchlog_hist.evvalue1%type,
+i_evvalue2      IN crdbtchlog_hist.evvalue2%type,
+i_ctxdate       IN crdbtchlog_hist.ctxdate%type) is
+
+BEGIN
+INSERT INTO crdbtchlog_hist( id,
+crdbtchlog_id,
+batch,
+delstatus,
+location,
+whoset,
+evtype,
+evvalue1,
+evvalue2,
+ctxdate,
+actdatetime
+)
+values
+( i_id,
+i_crdbtchlog_id,
+i_batch,
+i_delstatus,
+i_location,
+i_whoset,
+i_evtype,
+i_evvalue1,
+i_evvalue2,
+i_ctxdate,
+sysdate
+);
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_CRDBTCH_RNFEXT
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_CRDBTCH_RNFEXT" (
+i_batch         IN crdbtch_rnfext.batch%type,
+i_crdproduct_id IN crdbtch_rnfext.crdproduct_id%type,
+i_status        IN NUMBER,
+i_cardcount     IN crdbtch_rnfext.cardcount%type,
+i_date_cardpro  IN DATE,
+i_date_pinpro   IN DATE,
+i_btchtyp       IN crdbtch_rnfext.btchtyp%type)
+IS
+v_date_produced DATE;
+rec_count     NUMBER:=0;
+BEGIN
+IF i_btchtyp    != '5' THEN /* Exclude the REPIN Batch */
+v_date_produced := sysdate; -- Storing cards produced DATE (DATE_CARDPRO)
+
+SELECT COUNT(1)
+INTO rec_count
+FROM crdbtch_rnfext
+WHERE batch = i_batch;
+
+IF rec_count = 0 THEN
+INSERT INTO crdbtch_rnfext(
+batch,
+crdproduct_id,
+cardcount,
+date_produced,
+btchtyp)
+VALUES(
+i_batch,
+i_crdproduct_id,
+i_cardcount,
+v_date_produced,
+i_btchtyp);
+
+END IF;
+END IF;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_CRDDET
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_CRDDET" (action_IN IN char,
+		pan_IN IN crddet.pan%type,
+		seqno_IN IN number, pvv_IN IN char, pvki_IN IN char,
+		crdproduct_id_IN IN number, expdate IN date, old_pvv_IN IN char) is
+	action   varchar2(6)     := action_IN;
+	pan      varchar2(19)    := pan_IN;
+	seqno    number(5,0) := seqno_IN;
+	pvv      varchar2(4)     := pvv_IN;
+	pvki     char(1)     := pvki_IN;
+	crdproduct_id  number(10,0) := crdproduct_id_IN;
+	old_pvv  varchar2(4)     := old_pvv_IN;
+	hour_str char(2);
+	min_str  char(2);
+	sec_str  char(2);
+	time_num number(10,0);
+	ctxnew     number(10,0);
+	ctxdate    date;
+	error    number(10,0);
+	err_txt  varchar2(45);
+	scheme   varchar2(12);
+	e_invalid_cmd	EXCEPTION;
+begin
+	   error := 0;
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_CRDTELCODE
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_CRDTELCODE" (crddet_id_IN IN number, statcode_IN IN char) is
+	crddet_id number(10,0):= crddet_id_IN;
+	statcode varchar2(2) := statcode_IN;
+begin
+	if crddet_id is null then
+crddet_id := 0;
+end if;
+	if statcode = '00'
+	then		-- un-block the telecode
+		update crdtelcode set status = 0
+			where crdtelcode.crddet_id = crddet_id;
+	else		-- block the telecode
+		update crdtelcode set status = 1
+			where crdtelcode.crddet_id = crddet_id;
+	end if;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_CRDTELNOTE
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_CRDTELNOTE" ( crddet_id_IN IN number,
+					telecode_IN IN number,
+					action_IN IN number) is
+	crddet_id      number(10,0)     := crddet_id_IN;
+	telecode number(10,0) := telecode_IN;
+	action   number(5,0)  := action_IN;
+	hour_str char(2);
+	min_str  char(2);
+	sec_str  char(2);
+	time_num number(10,0);
+	ctxnew   number(10,0);
+	ctxdate  date;
+	exp	 date;
+begin
+	ctxdate := TO_DATE(TO_CHAR(sysdate, 'YYYYMMDD'), 'YYYYMMDD');
+time_num := to_number(to_char(sysdate, 'HH24MISS'));
+
+	if crddet_id is null then
+		crddet_id := 0;
+	end if;
+
+	select expdate
+		into exp
+		from crddet
+		where crddet.id = crddet_id;
+insert into crdtelnote (id, crddet_id, expdate, telecode, action, datein, timein, datesent,
+timesent, sent, attempts, errcode) values
+	(0, crddet_id, exp, telecode,
+		action, ctxdate, time_num, NULL, NULL, 0, 0, ' ');
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_DIMVAL_SCOPEKEY_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_DIMVAL_SCOPEKEY_HIST" 
+	(i_dimval_scopekey_id	rule_dimval_scopekey.id%type,
+	 i_dimension_id	rule_dimvalue.dimension_id%type,
+	 i_dimvalue_id	rule_dimvalue.id%type,
+	 i_scopedet_id	rule_dimval_scopekey.scopedet_id%type,
+	 i_scopekey	rule_dimval_scopekey.scopekey%type,
+	 i_action	char,
+	 i_activity_id	rule_dimval_scopekey.activity_id%type)
+IS
+	x_timestamp	rule_dimval_scopekey_hist.timechg%type;
+BEGIN
+
+	-- Get the system's timestamp
+	select systimestamp into x_timestamp from dual;
+
+	insert into rule_dimval_scopekey_hist(dimval_scopekey_id,
+					timechg, action, dimension_id,
+					dimvalue_id, scopedet_id, scopekey,
+							activity_id)
+		values
+	(i_dimval_scopekey_id, x_timestamp, i_action, i_dimension_id,
+				i_dimvalue_id, i_scopedet_id, i_scopekey,
+						i_activity_id);
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_EVENT_RNFEXT
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_EVENT_RNFEXT" (
+i_crddet_id     	IN event_rnfext.crddet_id%type,
+i_accdet_id       IN event_rnfext.accdet_id%type,
+i_crdproduct_id		IN crddet.crdproduct_id%type)
+is
+		pintype  	char(1);
+acctype   char(2);
+
+begin
+select substr(options,33,1)
+	into pintype
+	from crdproduct
+	where id = i_crdproduct_id;
+
+	select typecode into  acctype from accdet
+where  id = i_accdet_id;
+
+if pintype != '2' or  acctype ='89'
+then
+insert into event_rnfext values ('a', to_date(22630831,'YYYYMMDD'),0,i_crddet_id, i_accdet_id,1,'N','0');
+
+	end if;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_FC_CARDTYPECYCLE_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_FC_CARDTYPECYCLE_HIST" 
+	(i_fc_cardtypecycle_id	FC_CARDTYPECYCLE_HIST.fc_cardtypecycle_id%type,
+	 i_action		FC_CARDTYPECYCLE_HIST.action%type,
+	 i_inst_id		FC_CARDTYPECYCLE_HIST.inst_id%type,
+	 i_cat_isscycfee_id	FC_CARDTYPECYCLE_HIST.cat_isscycfee_id%type,
+	 i_crdproduct_id	FC_CARDTYPECYCLE.crdproduct_id%type,
+	 i_type_id		FC_CARDTYPECYCLE_HIST.type_id%type,
+	 i_cycledet_id		FC_CARDTYPECYCLE_HIST.cycledet_id%type,
+	 i_nextstart_epoch	FC_CARDTYPECYCLE_HIST.nextstart_epoch%type,
+	 i_last_proc_epoch	FC_CARDTYPECYCLE_HIST.last_proc_epoch%type,
+	 i_in_progress		FC_CARDTYPECYCLE_HIST.in_progress%type,
+	 i_no_repeat_days	FC_CARDTYPECYCLE_HIST.no_repeat_days%type,
+	 i_activity_id		FC_CARDTYPECYCLE_HIST.activity_id%type)
+is
+	x_timestamp		FC_CARDTYPECYCLE_HIST.timechg%type;
+	in_inst_id              FC_CARDTYPECYCLE_HIST.inst_id%type := i_inst_id;
+	in_crdproduct_id        FC_CARDTYPECYCLE_HIST.crdproduct_id%type := i_crdproduct_id;
+begin
+
+	-- Get the system's timestamp
+	select systimestamp into x_timestamp from dual;
+
+	if in_inst_id is null then
+		in_inst_id := 0;
+	end if;
+
+	if in_crdproduct_id is null then
+		in_crdproduct_id := 0;
+	end if;
+
+	insert into fc_cardtypecycle_hist(fc_cardtypecycle_id, timechg, action,
+				inst_id, cat_isscycfee_id,
+				crdproduct_id, type_id, cycledet_id,
+				nextstart_epoch, last_proc_epoch, in_progress,
+				no_repeat_days, activity_id)
+		values
+			(i_fc_cardtypecycle_id, x_timestamp, i_action,
+				in_inst_id, i_cat_isscycfee_id,
+				in_crdproduct_id, i_type_id, i_cycledet_id,
+				i_nextstart_epoch, i_last_proc_epoch,
+				i_in_progress, i_no_repeat_days, i_activity_id);
+
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_FC_CHARGEDET_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_FC_CHARGEDET_HIST" 
+	(i_fc_chargedet_id	FC_CHARGEDET_HIST.fc_chargedet_id%type,
+	 i_action		FC_CHARGEDET_HIST.action%type,
+	 i_inst_id		FC_CHARGEDET_HIST.inst_id%type,
+	 i_chargetag		FC_CHARGEDET_HIST.chargetag%type,
+	 i_chargetype		FC_CHARGEDET_HIST.chargetype%type,
+	 i_curcharge		FC_CHARGEDET_HIST.curcharge%type,
+	 i_threshold_id		FC_CHARGEDET_HIST.threshold_id%type,
+	 i_amttype		FC_CHARGEDET_HIST.amttype%type,
+	 i_percent		FC_CHARGEDET_HIST.percent%type,
+	 i_minval		FC_CHARGEDET_HIST.minval%type,
+	 i_maxval		FC_CHARGEDET_HIST.maxval%type,
+	 i_flatval		FC_CHARGEDET_HIST.flatval%type,
+	 i_offset_apply		FC_CHARGEDET_HIST.offset_apply%type,
+	 i_activity_id		FC_CHARGEDET_HIST.activity_id%type)
+is
+	x_timestamp		FC_CHARGEDET_HIST.timechg%type;
+	in_inst_id              FC_CHARGEDET_HIST.inst_id%type := i_inst_id;
+begin
+	-- Get the system's timestamp
+	select systimestamp into x_timestamp from dual;
+
+	if in_inst_id is null then
+		in_inst_id := 0;
+	end if;
+
+	insert into fc_chargedet_hist(fc_chargedet_id, timechg, action,
+				inst_id, chargetag, chargetype, curcharge,
+				threshold_id, amttype, percent, minval, maxval,
+				flatval, offset_apply, activity_id)
+		values
+			(i_fc_chargedet_id, x_timestamp, i_action,
+			in_inst_id, i_chargetag, i_chargetype, i_curcharge,
+			i_threshold_id, i_amttype, i_percent, i_minval,
+			i_maxval, i_flatval, i_offset_apply, i_activity_id);
+
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_FC_CHARGEDET_OVRD_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_FC_CHARGEDET_OVRD_HIST" 
+(i_fc_chargedet_ovrd_id FC_CHARGEDET_OVRD_HIST.fc_chargedet_ovrd_id%type,
+	 i_action		FC_CHARGEDET_OVRD_HIST.action%type,
+	 i_fc_chargedet_id	FC_CHARGEDET_OVRD_HIST.fc_chargedet_id%type,
+	 i_scopedet_id		FC_CHARGEDET_OVRD_HIST.scopedet_id%type,
+	 i_scopekey		FC_CHARGEDET_OVRD_HIST.scopekey%type,
+	 i_percent		FC_CHARGEDET_OVRD_HIST.percent%type,
+	 i_minval		FC_CHARGEDET_OVRD_HIST.minval%type,
+	 i_maxval		FC_CHARGEDET_OVRD_HIST.maxval%type,
+	 i_flatval		FC_CHARGEDET_OVRD_HIST.flatval%type,
+	 i_priority		FC_CHARGEDET_OVRD_HIST.priority%type,
+	 i_effdate		FC_CHARGEDET_OVRD_HIST.effdate%type,
+	 i_purgedate		FC_CHARGEDET_OVRD_HIST.purgedate%type,
+	 i_activity_id		FC_CHARGEDET_OVRD_HIST.activity_id%type)
+is
+	x_timestamp		FC_CHARGEDET_OVRD_HIST.timechg%type;
+begin
+	-- Get the system's timestamp
+	select systimestamp into x_timestamp from dual;
+
+	insert into fc_chargedet_ovrd_hist(fc_chargedet_ovrd_id, timechg,action,
+				fc_chargedet_id, scopedet_id, scopekey, percent,
+				minval, maxval, flatval, priority, effdate,
+				purgedate, activity_id)
+		values
+			(i_fc_chargedet_ovrd_id, x_timestamp, i_action,
+				i_fc_chargedet_id, i_scopedet_id, i_scopekey,
+				i_percent, i_minval, i_maxval, i_flatval,
+				i_priority,i_effdate,i_purgedate,i_activity_id);
+
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_IFMTLOG
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_IFMTLOG" (
+		tlogid		tlog.id%TYPE,
+		stan		tlog.stan%TYPE,
+		stanorg		tlog.stanorg%TYPE,
+		rrn		tlog.rrn%TYPE,
+		termtype	tlog.termtype%TYPE,
+		route_iid	tlog.route_iid%TYPE,
+		crdseqno	tlog.crdseqno%TYPE,
+		pan		tlog.pan%TYPE,
+		dateexp		tlog.dateexp%TYPE,
+		svccode		tlog.svccode%TYPE,
+		crdacptloc	tlog.crdacptloc%TYPE,
+		crdacptbus	tlog.crdacptbus%TYPE,
+		crdacptid	tlog.crdacptid%TYPE,
+		termcode	tlog.termcode%TYPE,
+		poschic		tlog.poschic%TYPE,
+		poschac		tlog.poschac%TYPE,
+		poscrc		tlog.poscrc%TYPE,
+		posoe		tlog.posoe%TYPE,
+		poschp		tlog.poschp%TYPE,
+		poscp		tlog.poscp%TYPE,
+		poscdim		tlog.poscdim%TYPE,
+		poscham		tlog.poscham%TYPE,
+		poscha		tlog.poscha%TYPE,
+		poschad		tlog.poschad%TYPE,
+		possd		tlog.possd%TYPE,
+		pospcc		tlog.pospcc%TYPE,
+		poscc_89	tlog.poscc_89%TYPE,
+		aiid		tlog.aiid%TYPE,
+		acqcountry	tlog.acqcountry%TYPE,
+		datexmit	tlog.datexmit%TYPE,
+		timexmit	tlog.timexmit%TYPE,
+		datelocal	tlog.datelocal%TYPE,
+		timelocal	tlog.timelocal%TYPE,
+		datexmitorg	tlog.datexmitorg%TYPE,
+		timexmitorg	tlog.timexmitorg%TYPE,
+		msgcls		tlog.msgcls%TYPE,
+		msgclsorg	tlog.msgclsorg%TYPE,
+		msgfn		tlog.msgfn%TYPE,
+		msgfnorg	tlog.msgfnorg%TYPE,
+		txnsrc		tlog.txnsrc%TYPE,
+		txnsrcorg	tlog.txnsrcorg%TYPE,
+		fncode		tlog.fncode%TYPE,
+		txncode		tlog.txncode%TYPE,
+		txnstatus	tlog.txnstatus%TYPE,
+		rejreason	tlog.rejreason%TYPE,
+		curtxn		tlog.curtxn%TYPE,
+		amttxn		tlog.amttxn%TYPE,
+		amttxnorg	tlog.amttxnorg%TYPE,
+		amttxncb	tlog.amttxncb%TYPE,
+		actioncode	tlog.actioncode%TYPE,
+		rspcode		tlog.rspcode%TYPE,
+		reasoncode	tlog.reasoncode%TYPE,
+		aprvlcode	tlog.aprvlcode%TYPE,
+		fiid		tlog.fiid%TYPE,
+		fiidcountry	tlog.fiidcountry%TYPE,
+		riid		tlog.riid%TYPE,
+		riidcountry	tlog.riidcountry%TYPE,
+		inbtchid	tlog.inbtchid%TYPE,
+		ctxdate		tlog.ctxdate%TYPE,
+		afe		tlog.afe%TYPE,
+		ife		tlog.ife%TYPE,
+		outbtchtype	tlog.outbtchtype%TYPE,
+		curbill		tlog.curbill%TYPE,
+		amtbill		tlog.amtbill%TYPE,
+		amtbillcb	tlog.amtbillcb%TYPE,
+		adddata		tlog.adddata%TYPE,
+		scheme		tlog.scheme%TYPE)
+AS tmp NUMBER(5,0);
+BEGIN
+	tmp := 0;
+	-- Dummy (empty) create or replace procedure, since this is in common
+	-- This is for customers without ifm.
+
+	-- Real create or replace procedure (for ifm customers) is in
+	-- base/ifm/src/crdb/schema_ora
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_RULE_ATOM_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_RULE_ATOM_HIST" 
+	(i_atomid	rule_atom.id%type,
+	 i_atom		rule_atom.atom%type,
+	 i_atomcode	rule_atom.atomcode%type,
+	 i_atomtype	rule_atom.atomtype%type,
+	 i_descr	rule_atom.descr%type,
+	 i_action	char,
+	 i_activity_id	rule_atom.activity_id%type)
+IS
+	x_timestamp	rule_atom_hist.timechg%type;
+BEGIN
+
+-- Get the system's timestamp
+	select systimestamp into x_timestamp from dual;
+
+	insert into rule_atom_hist(atom_id,timechg,action,atom,atomcode,
+					atomtype,descr,activity_id)
+		values
+	(i_atomid,x_timestamp,i_action,i_atom,i_atomcode,i_atomtype,i_descr,
+						i_activity_id);
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_RULE_CONTEXT_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_RULE_CONTEXT_HIST" 
+	(i_context_id	rule_context.id%type,
+	 i_action	char,
+	 i_old_ev_pen	rule_context.event_pending%type,
+	 i_new_ev_pen	rule_context.event_pending%type,
+	 i_activity_id	rule_context.activity_id%type)
+IS
+	x_timestamp	rule_context_hist.timechg%type;
+BEGIN
+
+	-- Get the system's timestamp
+	select systimestamp into x_timestamp from dual;
+
+	insert into rule_context_hist(context_id,timechg,action,
+					old_event_pending,new_event_pending,
+						activity_id)
+		values
+	(i_context_id,x_timestamp,i_action,i_old_ev_pen,i_new_ev_pen,
+						i_activity_id);
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_RULE_DIMLVLLINK_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_RULE_DIMLVLLINK_HIST" 
+	(i_dimlvlid	rule_dimlvllink.id%type,
+	 i_evalset_id	rule_evalset.id%type,
+	 i_dimvalue_id	rule_dimvalue.id%type,
+	 i_action	char,
+	 i_activity_id	rule_dimlvllink.activity_id%type)
+IS
+	x_timestamp	rule_dimlvllink_hist.timechg%type;
+BEGIN
+
+	-- Get the system's timestamp
+	select systimestamp into x_timestamp from dual;
+
+	insert into rule_dimlvllink_hist(dimlvllink_id,timechg,action,
+			evalset_id,dimvalue_id,activity_id)
+		values
+	(i_dimlvlid,x_timestamp,i_action,i_evalset_id,i_dimvalue_id,
+						i_activity_id);
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_RULE_DIMVALUE_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_RULE_DIMVALUE_HIST" 
+	(i_dimvalueid	rule_dimvalue.id%type,
+	 i_dimid	rule_dimvalue.dimension_id%type,
+	 i_inst_id	rule_dimvalue.inst_id%type,
+	 i_dimvalue	rule_dimvalue.dimvalue%type,
+	 i_descr	rule_dimvalue.descr%type,
+	 i_action	char,
+	 i_activity_id	rule_dimvalue.activity_id%type)
+IS
+	x_timestamp	rule_dimvalue_hist.timechg%type;
+	in_inst_id      rule_dimvalue.inst_id%type := i_inst_id;
+BEGIN
+
+	-- Get the system's timestamp
+	select systimestamp into x_timestamp from dual;
+
+	if in_inst_id is null then
+in_inst_id := 0;
+end if;
+
+	insert into rule_dimvalue_hist(dimvalue_id,timechg,action,dimension_id,
+			inst_id,dimvalue,descr,activity_id)
+		values
+	(i_dimvalueid,x_timestamp,i_action,i_dimid,in_inst_id,i_dimvalue,
+			i_descr,i_activity_id);
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_RULE_EVALDIMLINK_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_RULE_EVALDIMLINK_HIST" 
+	(i_evaldimlink	rule_evaldimlink.id%type,
+	 i_evalset_id	rule_evalset.id%type,
+	 i_dimvalue_id	rule_dimvalue.id%type,
+	 i_action	char,
+	 i_activity_id	rule_dimvalue.activity_id%type)
+IS
+	x_timestamp	rule_evaldimlink_hist.timechg%type;
+BEGIN
+
+	-- Get the system's timestamp
+	select systimestamp into x_timestamp from dual;
+
+	insert into rule_evaldimlink_hist(evaldimlink_id,timechg,action,
+			evalset_id,dimvalue_id,activity_id)
+		values
+	(i_evaldimlink,x_timestamp,i_action,i_evalset_id,i_dimvalue_id,
+						i_activity_id);
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_RULE_EVALRULELINK_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_RULE_EVALRULELINK_HIST" 
+	(i_evalrulelink	rule_evalrulelink.id%type,
+	 i_evalset_id	rule_evalset.id%type,
+	 i_rule_id	rule_rule.id%type,
+	 i_action	char,
+	 i_activity_id	rule_evalrulelink.activity_id%type)
+IS
+	x_timestamp	rule_evalrulelink_hist.timechg%type;
+BEGIN
+
+	-- Get the system's timestamp
+	select systimestamp into x_timestamp from dual;
+
+	insert into rule_evalrulelink_hist(evalrulelink_id,timechg,action,
+			rule_id,evalset_id,activity_id)
+		values
+	(i_evalrulelink,x_timestamp,i_action,i_rule_id,i_evalset_id,
+						i_activity_id);
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_RULE_EVALSET_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_RULE_EVALSET_HIST" 
+	(i_evalsetid	rule_evalset.id%type,
+	 i_inst_id	rule_evalset.inst_id%type,
+	 i_evalcode	rule_evalset.evalcode%type,
+	 i_priority	rule_evalset.priority%type,
+	 i_descr	rule_evalset.descr%type,
+	 i_enabled	rule_evalset.enabled%type,
+	 i_evaluation	rule_evalset.evaluation%type,
+	 i_retdata0	rule_evalset.ret_data0%type,
+	 i_retdata1	rule_evalset.ret_data1%type,
+	 i_retdata2	rule_evalset.ret_data2%type,
+	 i_retdata3	rule_evalset.ret_data3%type,
+	 i_retdata4	rule_evalset.ret_data4%type,
+	 i_retdata5	rule_evalset.ret_data5%type,
+	 i_retdata6	rule_evalset.ret_data6%type,
+	 i_retdata7	rule_evalset.ret_data7%type,
+	 i_action	char,
+	 i_activity_id	rule_evalset.activity_id%type)
+IS
+	x_timestamp	rule_evalset_hist.timechg%type;
+	in_inst_id      rule_evalset.inst_id%type := i_inst_id;
+BEGIN
+
+-- Get the system's timestamp
+	select systimestamp into x_timestamp from dual;
+
+	if in_inst_id is null then
+in_inst_id := 0;
+end if;
+
+	insert into rule_evalset_hist(evalset_id,timechg,action,
+		inst_id,evalcode,priority,descr,enabled,
+		evaluation,ret_data0,ret_data1,ret_data2,ret_data3,
+		ret_data4,ret_data5,ret_data6,ret_data7,activity_id)
+	values
+	(i_evalsetid,x_timestamp,i_action,in_inst_id,i_evalcode,
+	 i_priority,i_descr,i_enabled,i_evaluation,i_retdata0,i_retdata1,
+	 i_retdata2,i_retdata3,i_retdata4,i_retdata5,i_retdata6,i_retdata7,
+						i_activity_id);
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_RULE_RULE_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_RULE_RULE_HIST" 
+	(i_contextid	rule_rule.context_id%type,
+	 i_ruleid	rule_rule.id%type,
+	 i_inst_id	rule_rule.inst_id%type,
+	 i_rulename	rule_rule.rulename%type,
+	 i_ruleexpr	rule_rule.ruleexpr%type,
+	 i_descr	rule_rule.descr%type,
+	 i_action	char,
+	 i_activity_id	rule_rule.activity_id%type)
+IS
+	x_timestamp	rule_rule_hist.timechg%type;
+	in_inst_id      rule_rule.inst_id%type := i_inst_id;
+BEGIN
+
+-- Get the system's timestamp
+	select systimestamp into x_timestamp from dual;
+
+	if in_inst_id is null then
+in_inst_id := 0;
+end if;
+
+	insert into rule_rule_hist(context_id,rule_id,timechg,action,inst_id,
+					rulename,ruleexpr,descr,activity_id)
+		values
+	(i_contextid,i_ruleid,x_timestamp,
+		i_action,in_inst_id,i_rulename,i_ruleexpr,i_descr,
+							i_activity_id);
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_STATCHGPERM
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_STATCHGPERM" (statcontext_IN IN number,
+				from_statcode_IN IN char,
+				to_statcode_IN IN char) is
+
+	istatcontext	number(5,0):=statcontext_IN;
+ifrom_statcode	char(2):=from_statcode_IN;
+	ito_statcode	char(2):=to_statcode_IN;
+	count1		number(10,0);
+	count2		number(10,0);
+constraint_violation exception;
+pragma exception_init(constraint_violation, -02291);
+begin
+	--
+	-- Checks for first context: 1 - card status codes
+	--
+	if (istatcontext = 1) then
+
+		if ( 'xx' <> ifrom_statcode ) then
+			-- Check from value
+			select count(*) into count1 from CRDSTATUS
+					where statcode = ifrom_statcode;
+			if (count1 < 1) then
+				raise constraint_violation;
+			end if;
+		end if;
+
+		if ('xx' <> ito_statcode) then
+			-- Check to value
+			select count(*) into count2 from CRDSTATUS
+					where statcode = ito_statcode;
+			if (count2 < 1) then
+				raise constraint_violation;
+			end if;
+		end if;
+	end if;
+
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_TBLCHG
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_TBLCHG" 
+	(
+		in_branch_id	IN integer,
+		in_tablename	IN char,
+		in_keydata	IN char,
+		in_typchg	IN char
+	)
+IS
+	branch_id integer  := in_branch_id;
+	tablename char(10) := in_tablename;
+	keydata char(25)  := in_keydata;
+	typchg char(10)   := in_typchg;
+BEGIN
+	NULL;
+-- Dummy (empty) create or replace procedure does nothing
+-- Real create or replace procedure in src tree if required
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_THRESHOLD_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_THRESHOLD_HIST" 
+	(i_threshold_id	threshold_hist.threshold_id%type,
+	 i_action	threshold_hist.action%type,
+i_set_id	threshold_hist.set_id%type,
+i_max_value	threshold_hist.max_value%type,
+i_max_count	threshold_hist.max_count%type,
+i_time_period	threshold_hist.time_period%type,
+i_priority	threshold_hist.priority%type,
+i_descr	threshold_hist.descr%type,
+	 i_activity_id	threshold_hist.activity_id%type)
+is
+	x_timestamp	threshold_hist.timechg%type;
+begin
+	-- get the system time
+	select systimestamp into x_timestamp from dual;
+
+	insert into threshold_hist(threshold_id, timechg, action, set_id,
+			max_value, max_count, time_period, priority, descr,
+						activity_id)
+		values
+			(i_threshold_id, x_timestamp, i_action, i_set_id,
+			i_max_value, i_max_count, i_time_period, i_priority,
+						i_descr, i_activity_id);
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_THRESHOLD_OVRD_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_THRESHOLD_OVRD_HIST" 
+	(i_tovrd_id	threshold_ovrd_hist.threshold_ovrd_id%type,
+	 i_action	threshold_ovrd_hist.action%type,
+i_threshold_id	threshold_ovrd_hist.threshold_id%type,
+i_scopekey	threshold_ovrd_hist.scopekey%type,
+i_scopedet_id	threshold_ovrd_hist.scopedet_id%type,
+i_global_ovrd_all threshold_ovrd_hist.global_ovrd_all%type,
+i_max_value	threshold_ovrd_hist.max_value%type,
+i_max_count	threshold_ovrd_hist.max_count%type,
+	 i_time_period	threshold_ovrd_hist.time_period%type,
+i_priority	threshold_ovrd_hist.priority%type,
+i_effdate	threshold_ovrd_hist.effdate%type,
+i_purgedate	threshold_ovrd_hist.purgedate%type,
+	 i_activity_id	threshold_ovrd_hist.activity_id%type)
+is
+	x_timestamp	threshold_ovrd_hist.timechg%type;
+begin
+	-- get the system time
+	select systimestamp into x_timestamp from dual;
+
+	insert into threshold_ovrd_hist(threshold_ovrd_id, timechg, action,
+			threshold_id, scopekey, scopedet_id, global_ovrd_all,
+				max_value, max_count, time_period, priority,
+					effdate, purgedate, activity_id)
+		values
+			(i_tovrd_id, x_timestamp, i_action, i_threshold_id,
+			i_scopekey, i_scopedet_id, i_global_ovrd_all,
+			i_max_value, i_max_count, i_time_period, i_priority,
+					i_effdate, i_purgedate, i_activity_id);
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Procedure WRITE_THRESHOLD_SET_HIST
+--------------------------------------------------------
+set define off;
+
+  CREATE OR REPLACE EDITIONABLE PROCEDURE "PNB_DEV"."WRITE_THRESHOLD_SET_HIST" 
+	(i_set_id	threshold_set_hist.set_id%type,
+	 i_action	threshold_set_hist.action%type,
+i_set_code	threshold_set_hist.set_code%type,
+i_inst_id	threshold_set.inst_id%type,
+i_evalset_id	threshold_set_hist.evalset_id%type,
+i_aggr_def_id	threshold_set_hist.aggr_def_id%type,
+i_currcode	threshold_set_hist.currcode%type,
+i_descr	threshold_set_hist.descr%type,
+	 i_activity_id	threshold_set_hist.activity_id%type)
+is
+	x_timestamp	threshold_set_hist.timechg%type;
+	in_inst_id	threshold_set.inst_id%type := i_inst_id;
+begin
+
+	-- get the system time
+	select systimestamp into x_timestamp from dual;
+
+	if in_inst_id is null then
+		in_inst_id := 0;
+	end if;
+
+	insert into threshold_set_hist(set_id, timechg, action, set_code,
+					inst_id, evalset_id, aggr_def_id,
+						currcode, descr, activity_id)
+		values
+			(i_set_id, x_timestamp, i_action, i_set_code,
+			in_inst_id, i_evalset_id, i_aggr_def_id, i_currcode,
+						i_descr, i_activity_id);
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Package GLOBALPKG
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE PACKAGE "PNB_DEV"."GLOBALPKG" as
+	g_applno NUMBER(10,0) := 0;
+END globalPkg;
+
+/
+--------------------------------------------------------
+--  DDL for Function ATMAD_CPYATMS
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."ATMAD_CPYATMS" ( isrcatm TERMATM.id%type,
+				idestbegin TERMATM.id%type,
+				idestend   TERMATM.id%type)
+			return number is
+
+	xtermatm_id  TERMATM.id%type;
+	xnotecfg TERMATM.notecfg%type;
+	xupdated number(10,0);
+begin
+	xupdated := 0;
+
+	for v1 in (
+		select id
+		from TERMATM
+		where id between idestbegin and idestend
+		and   id <> isrcatm
+	)
+	loop
+		xtermatm_id := v1.id;
+		xupdated := xupdated + 1;
+
+		atmad_cpyatm(xtermatm_id, isrcatm);
+	end loop;
+
+	return xupdated;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Function ATMAD_LEVELDRUMSUM
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."ATMAD_LEVELDRUMSUM" (i_termatm_id in ATMDRUM.termatm_id%type)
+return number
+is
+
+	x_level4sum  	number(10,0);
+	x_level4count 	number(10,0);
+begin
+
+	select SUM(added),COUNT(added) into x_level4sum, x_level4count
+		from ATMDRUM where termatm_id = i_termatm_id;
+
+	-- if no records, sums are undefined
+	-- so if count is zero for any above, set sum to zero
+	if (x_level4count = 0) then
+		x_level4sum:=0;
+	end if;
+
+	return x_level4sum;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Function ATMAD_NOTEIDDRUMSUM
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."ATMAD_NOTEIDDRUMSUM" (
+		i_termatm_id	ATMDRUM.termatm_id%type,
+		i_noteid	ATMDRUM.noteid%type)
+return number
+is
+	x_noteidsum	number(10,0);
+	x_noteidcount	number(10,0);
+begin
+	select SUM(load),COUNT(added) into x_noteidsum, x_noteidcount
+		from ATMDRUM
+			where termatm_id = i_termatm_id and noteid = i_noteid;
+
+	if ( x_noteidcount = 0) then
+		x_noteidsum := 0;
+	end if;
+
+	return x_noteidsum;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Function ATMAD_NOTEIDSUM
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."ATMAD_NOTEIDSUM" (
+		i_termatm_id	ATMNOTEBIN.termatm_id%type,
+		i_noteid	ATMNOTEBIN.noteid%type)
+return number
+is
+	x_noteidsum	number(10,0);
+begin
+	select SUM(load) into x_noteidsum
+		from ATMNOTEBIN
+			where termatm_id = i_termatm_id and noteid = i_noteid;
+
+	return x_noteidsum;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Function ATMAD_UPDHIGHFULL
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."ATMAD_UPDHIGHFULL" (
+		iload		ATMBIN.load%type,
+		imaxload	ATMBIN.maxload%type,
+		ihighload	ATMBIN.highload%type,
+		istatus		ATMBIN.status%type)
+return	char
+is
+	newstatus	ATMBIN.status%type;
+	bindrum_ok	number(5,0);	-- =1 bin/drum ok, =0 error
+begin
+	-- assume bin/drum invalid status until otherwise confirmed ok
+	bindrum_ok:=0;
+
+	-- test for full bin/drum
+	if (     istatus='3'  -- DVC_PRESENT
+	      OR istatus='6'  -- DVC_LOW
+	      OR istatus='7'  -- DVC_OUT
+	      OR istatus='8'  -- DVC_OVER
+	      OR istatus='9'  -- DVC_HIGH
+	      OR istatus='A') -- DVC_FULL
+	then
+		-- bin/drum is ok
+		bindrum_ok:=1;
+	end if;
+
+	-- test for over full bin/drum
+	if ( (iload > imaxload) and bindrum_ok=1) then
+		return '8'; -- overfill
+	end if;
+
+	-- test for full bin/drum and ok
+	-- if IP gets here, iload <= imaxload
+	if (  (iload = imaxload) and bindrum_ok=1) then
+		return 'A';	-- full
+	end if;
+
+	-- test for high and ok
+	-- if IP gets iload < imaxload
+	if (  (iload >= ihighload) and bindrum_ok=1) then
+		return '9';	-- high
+	end if;
+
+	-- otherwise if bin/drum ok must be ok (present)
+	if (  bindrum_ok=1) then
+		return '3';	-- present (ok)
+	end if;
+
+	-- otherwise (bindrum_ok=0) return what came in
+	return istatus;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Function GENERATE_TIMESTAMP
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."GENERATE_TIMESTAMP" 
+RETURN NUMBER
+IS stampnow FLOAT(126);
+BEGIN
+SELECT TO_NUMBER(TO_CHAR(SYSDATE, 'YYYYMMDDHH24MISS'))
+INTO stampnow
+FROM DUAL;
+RETURN(stampnow);
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Function GETSYSDATE
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."GETSYSDATE" 
+return date
+is
+result date;
+begin
+	select	date_t into result
+	from	msc
+	where	tag='cursysdate';
+return result;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Function GET_ADDS_EMAIL_TEL_CM_ID
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."GET_ADDS_EMAIL_TEL_CM_ID" (i_crddet_id	crddet.id%TYPE DEFAULT NULL,
+						i_cmpt_id		prt_cmpt.id%TYPE,
+						i_tab_nm		VARCHAR2,
+						i_custdet_id	custdet.id%TYPE DEFAULT NULL)
+RETURN NUMBER
+IS
+	r_cm_id	prt_cm.id%TYPE :=0 ;
+	quary_str	VARCHAR2(5000);
+	v_cmpt_dft_id	prt_cmpt.id%TYPE;
+BEGIN
+	IF	LENGTH(TO_CHAR(i_cmpt_id)) >= 4 THEN
+		v_cmpt_dft_id := TO_NUMBER(SUBSTR(TO_CHAR(i_cmpt_id), 1, 2) || '00');
+	ELSE
+		v_cmpt_dft_id := 0;
+	END IF;
+
+	IF i_crddet_id IS NOT NULL AND i_crddet_id != 0 THEN
+		BEGIN
+			quary_str := ' select '|| i_tab_nm ||'.prt_cm_id
+				from '|| i_tab_nm || ',
+				prt_pcm,
+				prt_pcmp,
+				prt_pcmp_media,
+				prt_person,
+				prt_cmpt,
+				prt_prt,
+				prt_cmt,
+				custdet c,
+				inst i,
+				crddet crd
+			where	c.inst_id = i.id
+			and	prt_person.custdet_id = c.id
+			and prt_pcm.prt_prt_id = prt_prt.id
+			and prt_pcm.prt_party_id = prt_person.prt_party_id
+			and prt_pcmp.prt_cm_id = prt_pcm.prt_cm_id
+			and prt_pcmp.prt_cmt_id = prt_pcm.prt_cmt_id
+			and prt_pcmp.prt_prt_id = prt_pcm.prt_prt_id
+			and prt_pcmp.prt_party_id = prt_pcm.prt_party_id
+			and prt_pcmp.prt_pcm_from_date = prt_pcm.from_date
+			and prt_pcmp_media.prt_cmpt_id = prt_cmpt.id
+			and prt_cmt.id = '|| i_tab_nm ||'.prt_cmt_id
+			and prt_pcm.prt_cm_id = '|| i_tab_nm ||'.prt_cm_id
+			and prt_pcmp_media.mediatype_id = 0
+			and prt_pcmp_media.prt_cmpt_id = prt_pcmp.prt_cmpt_id
+			and prt_pcmp_media.prt_party_id = prt_pcmp.prt_party_id
+			and prt_pcmp_media.prt_cm_id = prt_pcmp.prt_cm_id
+			and prt_pcmp_media.prt_cmt_id = prt_pcmp.prt_cmt_id
+			and prt_pcmp_media.media_id = crd.id
+			and prt_pcmp_media.prt_prt_id = prt_pcmp.prt_prt_id
+			and prt_pcmp_media.prt_pcm_from_date = prt_pcmp.prt_pcm_from_date
+			and prt_pcmp_media.prt_pcmp_from_date = prt_pcmp.from_date
+			and prt_pcmp.from_date <= (select trunc(sysdate) from dual)
+			and prt_pcmp.until_date >= (select trunc(sysdate) from dual)
+			and prt_pcm.from_date <= (select trunc(sysdate) from dual)
+			and prt_pcm.until_date >= (select trunc(sysdate) from dual)
+			and prt_pcmp.from_date = (select max(prt_pcmp_from_date) from prt_pcmp_media t
+						where prt_pcmp_media.mediatype_id = t.mediatype_id
+						and prt_pcmp_media.prt_cmpt_id = t.prt_cmpt_id
+						and prt_pcmp_media.prt_party_id = t.prt_party_id
+						and prt_pcmp_media.prt_cm_id = t.prt_cm_id
+						and prt_pcmp_media.prt_cmt_id = t.prt_cmt_id
+						and prt_pcmp_media.media_id = t.media_id
+						and prt_pcmp_media.prt_prt_id = t.prt_prt_id
+										group by t.media_id, t.prt_cmpt_id)
+			and prt_pcmp.usage_type_id = 0
+			and	prt_pcmp.prt_cmpt_id = '|| i_cmpt_id ||'
+			and	crd.id = '|| i_crddet_id;
+
+			EXECUTE IMMEDIATE quary_str INTO r_cm_id;
+		  RETURN r_cm_id;
+		EXCEPTION WHEN NO_DATA_FOUND THEN
+			BEGIN
+				quary_str := ' select '|| i_tab_nm ||'.prt_cm_id
+					from '|| i_tab_nm || ',
+					prt_pcm,
+					prt_pcmp,
+					prt_pcmp_media,
+					prt_person,
+					prt_cmpt,
+					prt_prt,
+					prt_cmt,
+					custdet c,
+					inst i,
+					crddet crd
+				where	c.inst_id = i.id
+				and	prt_person.custdet_id = c.id
+				and prt_pcm.prt_prt_id = prt_prt.id
+				and prt_pcm.prt_party_id = prt_person.prt_party_id
+				and prt_pcmp.prt_cm_id = prt_pcm.prt_cm_id
+				and prt_pcmp.prt_cmt_id = prt_pcm.prt_cmt_id
+				and prt_pcmp.prt_prt_id = prt_pcm.prt_prt_id
+				and prt_pcmp.prt_party_id = prt_pcm.prt_party_id
+				and prt_pcmp.prt_pcm_from_date = prt_pcm.from_date
+				and prt_pcmp_media.prt_cmpt_id = prt_cmpt.id
+				and prt_cmt.id = '|| i_tab_nm ||'.prt_cmt_id
+				and prt_pcm.prt_cm_id = '|| i_tab_nm ||'.prt_cm_id
+				and prt_pcmp_media.mediatype_id = 0
+				and prt_pcmp_media.prt_cmpt_id = prt_pcmp.prt_cmpt_id
+				and prt_pcmp_media.prt_party_id = prt_pcmp.prt_party_id
+				and prt_pcmp_media.prt_cm_id = prt_pcmp.prt_cm_id
+				and prt_pcmp_media.prt_cmt_id = prt_pcmp.prt_cmt_id
+				and prt_pcmp_media.media_id = crd.id
+				and prt_pcmp_media.prt_prt_id = prt_pcmp.prt_prt_id
+				and prt_pcmp_media.prt_pcm_from_date = prt_pcmp.prt_pcm_from_date
+				and prt_pcmp_media.prt_pcmp_from_date = prt_pcmp.from_date
+				and prt_pcmp.from_date <= (select trunc(sysdate) from dual)
+				and prt_pcmp.until_date >= (select trunc(sysdate) from dual)
+				and prt_pcm.from_date <= (select trunc(sysdate) from dual)
+				and prt_pcm.until_date >= (select trunc(sysdate) from dual)
+				and prt_pcmp.usage_type_id = 0
+				and	prt_pcmp.prt_cmpt_id = '|| v_cmpt_dft_id ||'
+				and	crd.id = '|| i_crddet_id;
+
+				EXECUTE IMMEDIATE quary_str INTO r_cm_id;
+				RETURN r_cm_id;
+			EXCEPTION WHEN NO_DATA_FOUND THEN
+				BEGIN
+					quary_str := ' select '|| i_tab_nm ||'.prt_cm_id
+						from '|| i_tab_nm || ',
+						prt_pcm,
+						prt_pcmp,
+						prt_person,
+						prt_cmpt,
+						prt_prt,
+						prt_cmt,
+						custdet c,
+						inst i,
+						crddet crd
+					where	c.inst_id = i.id
+					and	crd.custdet_id = c.id
+					and	prt_person.custdet_id = c.id
+					and prt_pcm.prt_prt_id = prt_prt.id
+					and prt_pcm.prt_party_id = prt_person.prt_party_id
+					and prt_pcmp.prt_cm_id = prt_pcm.prt_cm_id
+					and prt_pcmp.prt_cmt_id = prt_pcm.prt_cmt_id
+					and prt_pcmp.prt_prt_id = prt_pcm.prt_prt_id
+					and prt_pcmp.prt_party_id = prt_pcm.prt_party_id
+					and prt_pcmp.prt_pcm_from_date = prt_pcm.from_date
+					and prt_pcmp.prt_cmpt_id = prt_cmpt.id
+					and prt_cmt.id = '|| i_tab_nm ||'.prt_cmt_id
+					and prt_pcm.prt_cm_id = '|| i_tab_nm ||'.prt_cm_id
+					and prt_pcmp.from_date <= (select trunc(sysdate) from dual)
+					and prt_pcmp.until_date >= (select trunc(sysdate) from dual)
+					and prt_pcm.from_date <= (select trunc(sysdate) from dual)
+					and prt_pcm.until_date >= (select trunc(sysdate) from dual)
+					and prt_pcmp.from_date = (select max(from_date) from prt_pcmp t
+											where prt_pcmp.prt_cmpt_id = t.prt_cmpt_id
+											and prt_pcmp.prt_party_id = t.prt_party_id
+											and prt_pcmp.prt_cm_id = t.prt_cm_id
+											and prt_pcmp.prt_cmt_id = t.prt_cmt_id
+											and prt_pcmp.prt_prt_id = t.prt_prt_id
+											group by t.prt_party_id, t.prt_cmpt_id)
+					and prt_pcmp.usage_type_id <> 0
+					and	prt_pcmp.prt_cmpt_id = '|| i_cmpt_id ||'
+					and	crd.id = '|| i_crddet_id;
+
+					EXECUTE IMMEDIATE quary_str INTO r_cm_id;
+					RETURN r_cm_id;
+				EXCEPTION WHEN NO_DATA_FOUND THEN
+					BEGIN
+						quary_str := ' select '|| i_tab_nm ||'.prt_cm_id
+							from '|| i_tab_nm || ',
+							prt_pcm,
+							prt_pcmp,
+							prt_person,
+							prt_cmpt,
+							prt_prt,
+							prt_cmt,
+							custdet c,
+							inst i,
+							crddet crd
+						where	c.inst_id = i.id
+						and	crd.custdet_id = c.id
+						and	prt_person.custdet_id = c.id
+						and prt_pcm.prt_prt_id = prt_prt.id
+						and prt_pcm.prt_party_id = prt_person.prt_party_id
+						and prt_pcmp.prt_cm_id = prt_pcm.prt_cm_id
+						and prt_pcmp.prt_cmt_id = prt_pcm.prt_cmt_id
+						and prt_pcmp.prt_prt_id = prt_pcm.prt_prt_id
+						and prt_pcmp.prt_party_id = prt_pcm.prt_party_id
+						and prt_pcmp.prt_pcm_from_date = prt_pcm.from_date
+						and prt_pcmp.prt_cmpt_id = prt_cmpt.id
+						and prt_cmt.id = '|| i_tab_nm ||'.prt_cmt_id
+						and prt_pcm.prt_cm_id = '|| i_tab_nm ||'.prt_cm_id
+						and prt_pcmp.from_date <= (select trunc(sysdate) from dual)
+						and prt_pcmp.until_date >= (select trunc(sysdate) from dual)
+						and prt_pcm.from_date <= (select trunc(sysdate) from dual)
+						and prt_pcm.until_date >= (select trunc(sysdate) from dual)
+						and prt_pcmp.usage_type_id <> 0
+						and	prt_pcmp.prt_cmpt_id = '|| v_cmpt_dft_id ||'
+						and	crd.id = '|| i_crddet_id;
+
+						EXECUTE IMMEDIATE quary_str INTO r_cm_id;
+						RETURN r_cm_id;
+					EXCEPTION WHEN OTHERS THEN
+						RETURN 0;
+					end;
+
+/
+--------------------------------------------------------
+--  DDL for Function GET_AMTCOM
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."GET_AMTCOM" (ctxdate IN date, id1 IN number)
+	return float
+	as
+	result float(126);
+	cr char(1);
+begin
+	cr     := '0';
+	result := 0.0;
+	select charge, credit into result, cr from chargelog
+		where	chargelog.ctxdate = ctxdate
+		and	chargelog.tlgid  = id1;
+	if cr is null then
+		cr := '0';
+	end if;
+	if result is null then
+		result := 0.0;
+	elsif cr = '1' then
+		result := 0 - result;
+	end if;
+	return result;
+exception
+	when no_data_found then
+	        return 0.0;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Function GET_CRDPROGRAM_ID_BY_PAN
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."GET_CRDPROGRAM_ID_BY_PAN" 
+(
+	in_pan CRDDET.pan%TYPE
+)
+return number
+as
+	ret	CRDDET.crdprogram_id%TYPE;
+	tmp	CRDDET.seqno%TYPE;
+	cursor sel_cur is
+		select seqno, crdprogram_id
+			from crddet where pan=in_pan order by seqno;
+begin
+	ret := 0;
+	open sel_cur;
+	fetch sel_cur into tmp, ret;
+	if sel_cur%NOTFOUND then
+		close sel_cur;
+		return 0;
+	else
+		close sel_cur;
+		return ret;
+	end if;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Function GET_PRM_RULES
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."GET_PRM_RULES" (i_prm_def_id prm_def.id%type,
+							i_prm_deft_id prm_def.prm_deft_id%type,
+							i_prm_valt_id prm_def.prm_valt_id%type)
+							return varchar2 is
+x_prm_rules varchar2(5000);
+
+begin
+	x_prm_rules := '';
+	for v1 in (
+				select to_char(prm_rulet_id) || '(' || prm_rulet.short_descr|| ')'|| ':'|| decode(to_char(long_value), NULL, '', to_char(long_value))
+						|| decode(to_char(double_value), NULL, '', '-' || to_char(double_value))
+						|| decode(to_char(date_time_value), NULL, '', '-' || to_char(date_time_value))
+						|| decode (string_value, NULL, '', decode(to_char(long_value), NULL, '', '-') || string_value)  prm_r
+				from prm_defr, prm_rulet
+				where prm_defr.prm_def_id = i_prm_def_id
+				and prm_defr.prm_deft_id = i_prm_deft_id
+				and prm_defr.prm_valt_id = i_prm_valt_id
+				and prm_defr.prm_rulet_id = prm_rulet.id
+			)
+		loop
+			x_prm_rules := x_prm_rules || v1.prm_r || ';';
+		end loop;
+
+	return x_prm_rules;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Function MONTHS_BETWEEN_DATES
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."MONTHS_BETWEEN_DATES" (todate date, fromdate date)
+return number
+is
+	m	number(10);
+begin
+	m := trunc(months_between(todate, fromdate), 0);
+
+	return m;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Function SET_INTEGER_TO
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."SET_INTEGER_TO" (val IN number)
+return number
+is
+	result	number(10,0);
+begin
+	result := val;
+	return result;
+end;
+
+/
+--------------------------------------------------------
+--  DDL for Function SQUIRREL_GET_ERROR_OFFSET
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."SQUIRREL_GET_ERROR_OFFSET" (query IN varchar2) return number authid current_user is      l_theCursor     integer default dbms_sql.open_cursor;      l_status        integer; begin          begin          dbms_sql.parse(  l_theCursor,query, dbms_sql.native );          exception                  when others then l_status := dbms_sql.last_error_position;          end;
+/        dbms_sql.close_cursor( l_theCursor );          return l_status; end;
+/
+
+/
+--------------------------------------------------------
+--  DDL for Function STRING_TO_INTEGER
+--------------------------------------------------------
+
+  CREATE OR REPLACE EDITIONABLE FUNCTION "PNB_DEV"."STRING_TO_INTEGER" (str char)
+return number
+is
+	i	number(10);
+begin
+	i := to_number(str);
+
+	return i;
+exception when others then
+	return 0;
+end;
+
+/
+--------------------------------------------------------
+--  Constraints for Table CCSS_CBS_TRANS_FRAUD_DETAILS
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."CCSS_CBS_TRANS_FRAUD_DETAILS" MODIFY ("ID" NOT NULL ENABLE);
+--------------------------------------------------------
+--  Constraints for Table CCSS_MANDATORY_FIELD_CONFIG
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."CCSS_MANDATORY_FIELD_CONFIG" MODIFY ("ID" NOT NULL ENABLE);
+--------------------------------------------------------
+--  Constraints for Table CCSS_MIDDLEWAREAPI_LOG_DETAILS
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."CCSS_MIDDLEWAREAPI_LOG_DETAILS" MODIFY ("ID" NOT NULL ENABLE);
+--------------------------------------------------------
+--  Constraints for Table CCSS_PROPERTIES
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."CCSS_PROPERTIES" MODIFY ("ID" NOT NULL ENABLE);
+--------------------------------------------------------
+--  Constraints for Table CCSS_REQ_AUDIT
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."CCSS_REQ_AUDIT" MODIFY ("ID" NOT NULL ENABLE);
+--------------------------------------------------------
+--  Constraints for Table CCSS_SUSPECTED_DETAILS
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."CCSS_SUSPECTED_DETAILS" MODIFY ("ID" NOT NULL ENABLE);
+--------------------------------------------------------
+--  Constraints for Table CCSS_SUSPECTED_REGISTRY
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."CCSS_SUSPECTED_REGISTRY" MODIFY ("ID" NOT NULL ENABLE);
+--------------------------------------------------------
+--  Constraints for Table CCSS_TRANS_DETAILS
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."CCSS_TRANS_DETAILS" MODIFY ("ID" NOT NULL ENABLE);
+--------------------------------------------------------
+--  Constraints for Table CCSS_SUSP_REP_API_LOG_DETAILS
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."CCSS_SUSP_REP_API_LOG_DETAILS" MODIFY ("ID" NOT NULL ENABLE);
+--------------------------------------------------------
+--  Constraints for Table CC_ACCOUNT_DETAILS
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."CC_ACCOUNT_DETAILS" MODIFY ("ID" NOT NULL ENABLE);
+--------------------------------------------------------
+--  Constraints for Table CHANNEL_DETAIL
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."CHANNEL_DETAIL" MODIFY ("ID" NOT NULL ENABLE);
+--------------------------------------------------------
+--  Constraints for Table GROUP_MASTER
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."GROUP_MASTER" MODIFY ("GROUPID" NOT NULL ENABLE);
+  ALTER TABLE "PNB_DEV"."GROUP_MASTER" MODIFY ("SID" NOT NULL ENABLE);
+  ALTER TABLE "PNB_DEV"."GROUP_MASTER" MODIFY ("TID" NOT NULL ENABLE);
+  ALTER TABLE "PNB_DEV"."GROUP_MASTER" ADD PRIMARY KEY ("GROUPID", "SID", "TID")
+  USING INDEX PCTFREE 10 INITRANS 2 MAXTRANS 255 COMPUTE STATISTICS 
+  STORAGE(INITIAL 65536 NEXT 1048576 MINEXTENTS 1 MAXEXTENTS 2147483645
+  PCTINCREASE 0 FREELISTS 1 FREELIST GROUPS 1
+  BUFFER_POOL DEFAULT FLASH_CACHE DEFAULT CELL_FLASH_CACHE DEFAULT)
+  TABLESPACE "BOMDEV_DATA"  ENABLE;
+--------------------------------------------------------
+--  Constraints for Table INSTID_MASTER
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."INSTID_MASTER" MODIFY ("ORG_ID" NOT NULL ENABLE);
+  ALTER TABLE "PNB_DEV"."INSTID_MASTER" ADD PRIMARY KEY ("ORG_ID")
+  USING INDEX PCTFREE 10 INITRANS 2 MAXTRANS 255 COMPUTE STATISTICS 
+  STORAGE(INITIAL 65536 NEXT 1048576 MINEXTENTS 1 MAXEXTENTS 2147483645
+  PCTINCREASE 0 FREELISTS 1 FREELIST GROUPS 1
+  BUFFER_POOL DEFAULT FLASH_CACHE DEFAULT CELL_FLASH_CACHE DEFAULT)
+  TABLESPACE "BOMDEV_DATA"  ENABLE;
+--------------------------------------------------------
+--  Constraints for Table MENU_MASTER
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."MENU_MASTER" MODIFY ("MENU_ID" NOT NULL ENABLE);
+  ALTER TABLE "PNB_DEV"."MENU_MASTER" MODIFY ("MENU_NAME" NOT NULL ENABLE);
+  ALTER TABLE "PNB_DEV"."MENU_MASTER" MODIFY ("TID" NOT NULL ENABLE);
+  ALTER TABLE "PNB_DEV"."MENU_MASTER" MODIFY ("SID" NOT NULL ENABLE);
+  ALTER TABLE "PNB_DEV"."MENU_MASTER" MODIFY ("SUB_MENU" NOT NULL ENABLE);
+  ALTER TABLE "PNB_DEV"."MENU_MASTER" MODIFY ("MAKERID" NOT NULL ENABLE);
+  ALTER TABLE "PNB_DEV"."MENU_MASTER" MODIFY ("CHECKERID" NOT NULL ENABLE);
+  ALTER TABLE "PNB_DEV"."MENU_MASTER" MODIFY ("MODIFIEDDATE" NOT NULL ENABLE);
+  ALTER TABLE "PNB_DEV"."MENU_MASTER" MODIFY ("INSERTEDDATE" NOT NULL ENABLE);
+--------------------------------------------------------
+--  Constraints for Table NCCRPREGISTRATION
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."NCCRPREGISTRATION" MODIFY ("CASEID" NOT NULL ENABLE);
+  ALTER TABLE "PNB_DEV"."NCCRPREGISTRATION" ADD PRIMARY KEY ("CASEID")
+  USING INDEX PCTFREE 10 INITRANS 2 MAXTRANS 255 COMPUTE STATISTICS 
+  TABLESPACE "BOMDEV_DATA"  ENABLE;
+--------------------------------------------------------
+--  Constraints for Table PEP_DATA
+--------------------------------------------------------
+
+  ALTER TABLE "PNB_DEV"."PEP_DATA" ADD PRIMARY KEY ("PERSON_ID")
+  USING INDEX PCTFREE 10 INITRANS 2 MAXTRANS 255 COMPUTE STATISTICS 
+  STORAGE(INITIAL 65536 NEXT 1048576 MINEXTENTS 1 MAXEXTENTS 2147483645
+  PCTINCREASE 0 FREELISTS 1 FREELIST GROUPS 1
+  BUFFER_POOL DEFAULT FLASH_CACHE DEFAULT CELL_FLASH_CACHE DEFAULT)
+  TABLESPACE "BOMDEV_DATA"  ENABLE;
